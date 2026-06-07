@@ -337,6 +337,138 @@ def write_excel_values_to_tsv(excel_file_path: Path) -> Path:
     return tsv_file_path
 
 
+VEHICLE_TYPE_SORT_ORDER = {
+    "2t": 0,
+    "4t": 1,
+    "大型": 2,
+    "": 3,
+}
+
+
+def read_tsv_rows(tsv_file_path: Path) -> list[list[str]]:
+    """Read a TSV file as rows."""
+    with tsv_file_path.open("r", encoding="utf-8-sig", newline="") as tsv_file:
+        return list(csv.reader(tsv_file, delimiter="\t"))
+
+
+def parse_tsv_date_header(date_text: str) -> datetime:
+    """Parse a TSV date header into a datetime."""
+    normalized_date_text = date_text.strip()
+    match = re.fullmatch(r"([0-9]{4})[/-]([0-9]{1,2})[/-]([0-9]{1,2})", normalized_date_text)
+    if match is not None:
+        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+    match = re.fullmatch(r"([0-9]{4})年([0-9]{1,2})月([0-9]{1,2})日", normalized_date_text)
+    if match is not None:
+        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+    raise RuntimeError(f"日付ヘッダーを解析できません: {date_text}")
+
+
+def format_step0001_date_text(date_text: str) -> str:
+    """Format a TSV date header for a step0001 output file name."""
+    parsed_date = parse_tsv_date_header(date_text)
+    return f"{parsed_date.year}年{parsed_date.month:02d}月{parsed_date.day:02d}日"
+
+
+def get_cell_value(row_values: list[str], i_column_index: int) -> str:
+    """Return a cell value from a row or an empty string when the column is missing."""
+    if i_column_index >= len(row_values):
+        return ""
+
+    return row_values[i_column_index]
+
+
+def get_date_columns(monthly_tsv_rows: list[list[str]]) -> list[tuple[int, str]]:
+    """Return date column indexes and date header text from monthly TSV rows."""
+    if len(monthly_tsv_rows) == 0:
+        raise RuntimeError("月間TSVに行がありません。")
+
+    header_row = monthly_tsv_rows[0]
+    list_date_columns: list[tuple[int, str]] = []
+    for i_column_index, date_text in enumerate(header_row[1:], start=1):
+        if date_text.strip() == "":
+            continue
+
+        parse_tsv_date_header(date_text)
+        list_date_columns.append((i_column_index, date_text))
+
+    if len(list_date_columns) == 0:
+        raise RuntimeError("日付列が見つかりません。")
+
+    return list_date_columns
+
+
+def sort_key_for_vehicle_type(vehicle_type_text: str, i_original_index: int) -> tuple[int, str, int]:
+    """Return a stable sort key for a three-row daily block."""
+    stripped_vehicle_type_text = vehicle_type_text.strip()
+    i_sort_order = VEHICLE_TYPE_SORT_ORDER.get(stripped_vehicle_type_text, 4)
+    return i_sort_order, stripped_vehicle_type_text, i_original_index
+
+
+def build_sorted_daily_blocks(monthly_tsv_rows: list[list[str]], i_date_column_index: int) -> list[list[list[str]]]:
+    """Build sorted three-row daily blocks for one date column."""
+    list_daily_blocks: list[tuple[int, list[list[str]]]] = []
+    data_rows = monthly_tsv_rows[1:]
+
+    for i_block_start_index in range(0, len(data_rows), 3):
+        block_source_rows = data_rows[i_block_start_index:i_block_start_index + 3]
+        if len(block_source_rows) < 3:
+            continue
+
+        destination_text = get_cell_value(block_source_rows[0], i_date_column_index)
+        vehicle_type_text = get_cell_value(block_source_rows[1], i_date_column_index)
+        note_text = get_cell_value(block_source_rows[2], i_date_column_index)
+        if destination_text == "" and vehicle_type_text == "" and note_text == "":
+            continue
+
+        no_text = get_cell_value(block_source_rows[0], 0)
+        daily_block = [
+            [no_text, destination_text],
+            ["", vehicle_type_text],
+            ["", note_text],
+        ]
+        list_daily_blocks.append((i_block_start_index, daily_block))
+
+    list_daily_blocks.sort(key=lambda block_item: sort_key_for_vehicle_type(block_item[1][1][1], block_item[0]))
+    return [daily_block for _, daily_block in list_daily_blocks]
+
+
+def build_daily_tsv_rows(monthly_tsv_rows: list[list[str]], i_date_column_index: int, date_text: str) -> list[list[str]]:
+    """Build TSV rows for a single date column."""
+    daily_tsv_rows = [[get_cell_value(monthly_tsv_rows[0], 0), date_text]]
+    for daily_block in build_sorted_daily_blocks(monthly_tsv_rows, i_date_column_index):
+        daily_tsv_rows.extend(daily_block)
+    return daily_tsv_rows
+
+
+def build_step0001_tsv_file_path(monthly_tsv_file_path: Path, date_text: str) -> Path:
+    """Build a step0001 daily TSV output path."""
+    formatted_date_text = format_step0001_date_text(date_text)
+    return monthly_tsv_file_path.with_name(f"{monthly_tsv_file_path.stem}_step0001_{formatted_date_text}.tsv")
+
+
+def write_tsv_rows(tsv_file_path: Path, rows: list[list[str]]) -> None:
+    """Write rows to a TSV file."""
+    with tsv_file_path.open("w", encoding="utf-8-sig", newline="") as tsv_file:
+        tsv_writer = csv.writer(tsv_file, delimiter="\t", lineterminator="\n")
+        tsv_writer.writerows(rows)
+
+
+def write_step0001_daily_tsv_files(monthly_tsv_file_path: Path) -> list[Path]:
+    """Create step0001 daily TSV files from a monthly TSV file."""
+    monthly_tsv_rows = read_tsv_rows(monthly_tsv_file_path)
+    list_daily_tsv_file_paths: list[Path] = []
+
+    for i_date_column_index, date_text in get_date_columns(monthly_tsv_rows):
+        daily_tsv_rows = build_daily_tsv_rows(monthly_tsv_rows, i_date_column_index, date_text)
+        daily_tsv_file_path = build_step0001_tsv_file_path(monthly_tsv_file_path, date_text)
+        write_tsv_rows(daily_tsv_file_path, daily_tsv_rows)
+        list_daily_tsv_file_paths.append(daily_tsv_file_path)
+
+    return list_daily_tsv_file_paths
+
+
 def main() -> int:
     """Read an Excel file path from the command line and create a same-named TSV."""
     if len(sys.argv) != 2:
@@ -351,11 +483,14 @@ def main() -> int:
 
     try:
         tsv_file_path = write_excel_values_to_tsv(excel_file_path)
+        list_daily_tsv_file_paths = write_step0001_daily_tsv_files(tsv_file_path)
     except Exception as exception:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
         return 1
 
     print(tsv_file_path)
+    for daily_tsv_file_path in list_daily_tsv_file_paths:
+        print(daily_tsv_file_path)
     return 0
 
 
