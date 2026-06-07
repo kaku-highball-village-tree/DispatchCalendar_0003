@@ -95,18 +95,40 @@ def read_xml_from_zip(excel_archive: zipfile.ZipFile, archive_path: str) -> Elem
         return None
 
 
+def read_text_without_phonetic(root_node: ElementTree.Element) -> str:
+    """Read visible string text without Excel phonetic guide text."""
+    list_text_parts: list[str] = []
+    text_tag = namespace_tag(EXCEL_NAMESPACE, "t")
+    rich_text_run_tag = namespace_tag(EXCEL_NAMESPACE, "r")
+    phonetic_text_tag = namespace_tag(EXCEL_NAMESPACE, "rPh")
+    phonetic_properties_tag = namespace_tag(EXCEL_NAMESPACE, "phoneticPr")
+
+    for child_node in list(root_node):
+        if child_node.tag == text_tag:
+            list_text_parts.append(child_node.text or "")
+            continue
+
+        if child_node.tag == rich_text_run_tag:
+            text_node = child_node.find(text_tag)
+            if text_node is not None:
+                list_text_parts.append(text_node.text or "")
+            continue
+
+        if child_node.tag in {phonetic_text_tag, phonetic_properties_tag}:
+            continue
+
+    return "".join(list_text_parts)
+
+
 def read_shared_strings(excel_archive: zipfile.ZipFile) -> list[str]:
-    """Read shared strings from an Excel archive."""
+    """Read shared strings from an Excel archive without phonetic guide text."""
     shared_strings_root = read_xml_from_zip(excel_archive, "xl/sharedStrings.xml")
     if shared_strings_root is None:
         return []
 
     list_shared_strings: list[str] = []
     for string_item in shared_strings_root.findall(namespace_tag(EXCEL_NAMESPACE, "si")):
-        list_text_parts: list[str] = []
-        for text_node in string_item.iter(namespace_tag(EXCEL_NAMESPACE, "t")):
-            list_text_parts.append(text_node.text or "")
-        list_shared_strings.append("".join(list_text_parts))
+        list_shared_strings.append(read_text_without_phonetic(string_item))
 
     return list_shared_strings
 
@@ -218,15 +240,12 @@ def format_numeric_text(numeric_text: str) -> str:
 
 
 def read_inline_string(cell_node: ElementTree.Element) -> str:
-    """Read an inline string from a worksheet cell."""
+    """Read an inline string from a worksheet cell without phonetic guide text."""
     inline_string_node = cell_node.find(namespace_tag(EXCEL_NAMESPACE, "is"))
     if inline_string_node is None:
         return ""
 
-    list_text_parts: list[str] = []
-    for text_node in inline_string_node.iter(namespace_tag(EXCEL_NAMESPACE, "t")):
-        list_text_parts.append(text_node.text or "")
-    return "".join(list_text_parts)
+    return read_text_without_phonetic(inline_string_node)
 
 
 def read_cell_text(
