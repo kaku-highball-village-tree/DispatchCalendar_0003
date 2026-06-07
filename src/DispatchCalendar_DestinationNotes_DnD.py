@@ -91,26 +91,17 @@ def run_cmd_script(h_window: int, obj_excel_file_path: Path) -> None:
     ]
 
     try:
-        obj_completed_process: subprocess.CompletedProcess[str] = subprocess.run(
+        obj_completed_process: subprocess.CompletedProcess[bytes] = subprocess.run(
             list_subprocess_arguments,
             cwd=str(obj_excel_file_path.parent),
-            capture_output=True,
-            text=True,
             check=False,
         )
     except Exception as obj_exception:  # noqa: BLE001
         show_error_message_box(h_window, f"Failed to start command script.\n{obj_exception}")
         return
 
-    if obj_completed_process.returncode == 0:
-        return
-
-    psz_error_text: str = obj_completed_process.stderr.strip()
-    if psz_error_text == "":
-        psz_error_text = obj_completed_process.stdout.strip()
-    if psz_error_text == "":
-        psz_error_text = "処理に失敗しました。"
-    show_error_message_box(h_window, psz_error_text)
+    if obj_completed_process.returncode != 0:
+        show_error_message_box(h_window, "処理に失敗しました。詳細はcmdを確認してください。")
 
 
 def on_drop_files(h_window: int, h_drop: int) -> None:
