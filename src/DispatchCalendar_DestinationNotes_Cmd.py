@@ -13,6 +13,11 @@ ALLOWED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 EXCEL_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
 OFFICE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+VEHICLE_TYPE_SORT_ORDER = {"2t": 0, "4t": 1, "大型": 2}
+OTHER_VEHICLE_TYPE_SORT_INDEX = 3
+BLANK_VEHICLE_TYPE_SORT_INDEX = 4
+
+
 BUILT_IN_DATE_FORMAT_IDS = {
     14,
     15,
@@ -453,6 +458,153 @@ def write_step0001_daily_tsv_files(monthly_tsv_file_path: Path) -> list[Path]:
     return list_daily_tsv_file_paths
 
 
+def build_step0002_tsv_file_path(step0001_tsv_file_path: Path) -> Path:
+    """Build a step0002 TSV output path from a step0001 TSV path."""
+    if "_step0001_" not in step0001_tsv_file_path.name:
+        raise RuntimeError(f"step0001 TSVファイル名ではありません: {step0001_tsv_file_path}")
+
+    step0002_file_name = step0001_tsv_file_path.name.replace("_step0001_", "_step0002_", 1)
+    return step0001_tsv_file_path.with_name(step0002_file_name)
+
+
+def build_step0002_error_file_path(step0002_tsv_file_path: Path) -> Path:
+    """Build a step0002 error file path by appending _error.txt to the TSV name."""
+    return step0002_tsv_file_path.with_name(f"{step0002_tsv_file_path.name}_error.txt")
+
+
+def get_vehicle_type_sort_index(vehicle_type_text: str) -> int:
+    """Return the requested vehicle-type sort index."""
+    normalized_vehicle_type_text = vehicle_type_text.strip()
+    if normalized_vehicle_type_text == "":
+        return BLANK_VEHICLE_TYPE_SORT_INDEX
+
+    return VEHICLE_TYPE_SORT_ORDER.get(normalized_vehicle_type_text, OTHER_VEHICLE_TYPE_SORT_INDEX)
+
+
+def read_step0001_daily_blocks(step0001_tsv_rows: list[list[str]]) -> list[list[list[str]]]:
+    """Read three-row daily blocks from step0001 TSV rows."""
+    if len(step0001_tsv_rows) == 0:
+        raise RuntimeError("step0001 TSVに行がありません。")
+
+    data_rows = step0001_tsv_rows[1:]
+    if len(data_rows) % 3 != 0:
+        raise RuntimeError("step0001 TSVのデータ行数が3の倍数ではありません。")
+
+    list_daily_blocks: list[list[list[str]]] = []
+    for i_block_start_index in range(0, len(data_rows), 3):
+        block_source_rows = data_rows[i_block_start_index:i_block_start_index + 3]
+        block_rows = [list(row_values) for row_values in block_source_rows]
+        while len(block_rows[0]) < 2:
+            block_rows[0].append("")
+        while len(block_rows[1]) < 2:
+            block_rows[1].append("")
+        while len(block_rows[2]) < 2:
+            block_rows[2].append("")
+        list_daily_blocks.append(block_rows)
+
+    return list_daily_blocks
+
+
+def sort_step0001_daily_blocks(list_daily_blocks: list[list[list[str]]]) -> list[list[list[str]]]:
+    """Sort step0001 daily blocks by vehicle type without changing equal-order blocks."""
+    indexed_daily_blocks = list(enumerate(list_daily_blocks))
+    indexed_daily_blocks.sort(
+        key=lambda indexed_daily_block: (
+            get_vehicle_type_sort_index(get_cell_value(indexed_daily_block[1][1], 1)),
+            get_cell_value(indexed_daily_block[1][1], 1).strip(),
+            indexed_daily_block[0],
+        )
+    )
+    return [daily_block for _, daily_block in indexed_daily_blocks]
+
+
+def build_step0002_error_lines(list_sorted_daily_blocks: list[list[list[str]]]) -> list[str]:
+    """Build error lines for other or blank vehicle types in a step0002 TSV."""
+    list_error_lines: list[str] = []
+    for i_block_number, daily_block in enumerate(list_sorted_daily_blocks, start=1):
+        vehicle_type_text = get_cell_value(daily_block[1], 1)
+        i_sort_index = get_vehicle_type_sort_index(vehicle_type_text)
+        if i_sort_index not in {OTHER_VEHICLE_TYPE_SORT_INDEX, BLANK_VEHICLE_TYPE_SORT_INDEX}:
+            continue
+
+        if i_sort_index == OTHER_VEHICLE_TYPE_SORT_INDEX:
+            error_type_text = "その他車種"
+        else:
+            error_type_text = "車種空欄"
+
+        list_error_lines.extend([
+            f"[{error_type_text}]",
+            f"NO: {i_block_number}",
+            f"配送先: {get_cell_value(daily_block[0], 1)}",
+            f"車種: {vehicle_type_text}",
+            f"備考: {get_cell_value(daily_block[2], 1)}",
+            "",
+        ])
+
+    return list_error_lines
+
+
+def build_step0002_tsv_rows(step0001_tsv_rows: list[list[str]]) -> tuple[list[list[str]], list[str]]:
+    """Build sorted step0002 TSV rows and related error lines from step0001 rows."""
+    if len(step0001_tsv_rows) == 0:
+        raise RuntimeError("step0001 TSVに行がありません。")
+
+    step0002_tsv_rows = [step0001_tsv_rows[0]]
+    list_sorted_daily_blocks = sort_step0001_daily_blocks(read_step0001_daily_blocks(step0001_tsv_rows))
+    list_error_lines = build_step0002_error_lines(list_sorted_daily_blocks)
+
+    for i_block_number, daily_block in enumerate(list_sorted_daily_blocks, start=1):
+        step0002_tsv_rows.extend([
+            [str(i_block_number), get_cell_value(daily_block[0], 1)],
+            ["", get_cell_value(daily_block[1], 1)],
+            ["", get_cell_value(daily_block[2], 1)],
+        ])
+
+    return step0002_tsv_rows, list_error_lines
+
+
+def write_step0002_error_file(
+    step0002_error_file_path: Path,
+    step0002_tsv_file_path: Path,
+    list_error_lines: list[str],
+) -> None:
+    """Write a step0002 error file."""
+    list_output_lines = [
+        f"対象ファイル: {step0002_tsv_file_path.name}",
+        "",
+        *list_error_lines,
+    ]
+    step0002_error_file_path.write_text("\n".join(list_output_lines).rstrip() + "\n", encoding="utf-8-sig")
+
+
+def write_step0002_daily_tsv_file(step0001_tsv_file_path: Path) -> list[Path]:
+    """Create a sorted step0002 TSV file and its error file when needed."""
+    step0001_tsv_rows = read_tsv_rows(step0001_tsv_file_path)
+    step0002_tsv_rows, list_error_lines = build_step0002_tsv_rows(step0001_tsv_rows)
+    step0002_tsv_file_path = build_step0002_tsv_file_path(step0001_tsv_file_path)
+    step0002_error_file_path = build_step0002_error_file_path(step0002_tsv_file_path)
+
+    write_tsv_rows(step0002_tsv_file_path, step0002_tsv_rows)
+    list_created_file_paths = [step0002_tsv_file_path]
+
+    if len(list_error_lines) > 0:
+        write_step0002_error_file(step0002_error_file_path, step0002_tsv_file_path, list_error_lines)
+        list_created_file_paths.append(step0002_error_file_path)
+    elif step0002_error_file_path.exists():
+        step0002_error_file_path.unlink()
+
+    return list_created_file_paths
+
+
+def write_step0002_daily_tsv_files(list_step0001_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create sorted step0002 TSV files from step0001 TSV files."""
+    list_created_file_paths: list[Path] = []
+    for step0001_tsv_file_path in list_step0001_tsv_file_paths:
+        list_created_file_paths.extend(write_step0002_daily_tsv_file(step0001_tsv_file_path))
+
+    return list_created_file_paths
+
+
 def main() -> int:
     """Read an Excel file path from the command line and create a same-named TSV."""
     if len(sys.argv) != 2:
@@ -468,6 +620,7 @@ def main() -> int:
     try:
         tsv_file_path = write_excel_values_to_tsv(excel_file_path)
         list_daily_tsv_file_paths = write_step0001_daily_tsv_files(tsv_file_path)
+        list_step0002_tsv_file_paths = write_step0002_daily_tsv_files(list_daily_tsv_file_paths)
     except Exception as exception:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
         return 1
@@ -475,6 +628,8 @@ def main() -> int:
     print(tsv_file_path)
     for daily_tsv_file_path in list_daily_tsv_file_paths:
         print(daily_tsv_file_path)
+    for step0002_tsv_file_path in list_step0002_tsv_file_paths:
+        print(step0002_tsv_file_path)
     return 0
 
 
