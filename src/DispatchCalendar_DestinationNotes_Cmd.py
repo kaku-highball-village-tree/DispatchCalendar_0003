@@ -337,14 +337,6 @@ def write_excel_values_to_tsv(excel_file_path: Path) -> Path:
     return tsv_file_path
 
 
-VEHICLE_TYPE_SORT_ORDER = {
-    "2t": 0,
-    "4t": 1,
-    "大型": 2,
-    "": 3,
-}
-
-
 def read_tsv_rows(tsv_file_path: Path) -> list[list[str]]:
     """Read a TSV file as rows."""
     with tsv_file_path.open("r", encoding="utf-8-sig", newline="") as tsv_file:
@@ -399,16 +391,9 @@ def get_date_columns(monthly_tsv_rows: list[list[str]]) -> list[tuple[int, str]]
     return list_date_columns
 
 
-def sort_key_for_vehicle_type(vehicle_type_text: str, i_original_index: int) -> tuple[int, str, int]:
-    """Return a stable sort key for a three-row daily block."""
-    stripped_vehicle_type_text = vehicle_type_text.strip()
-    i_sort_order = VEHICLE_TYPE_SORT_ORDER.get(stripped_vehicle_type_text, 4)
-    return i_sort_order, stripped_vehicle_type_text, i_original_index
-
-
-def build_sorted_daily_blocks(monthly_tsv_rows: list[list[str]], i_date_column_index: int) -> list[list[list[str]]]:
-    """Build sorted three-row daily blocks for one date column."""
-    list_daily_blocks: list[tuple[int, list[list[str]]]] = []
+def build_daily_blocks(monthly_tsv_rows: list[list[str]], i_date_column_index: int) -> list[list[list[str]]]:
+    """Build unsorted three-row daily blocks for one date column."""
+    list_daily_blocks: list[list[list[str]]] = []
     data_rows = monthly_tsv_rows[1:]
 
     for i_block_start_index in range(0, len(data_rows), 3):
@@ -428,16 +413,15 @@ def build_sorted_daily_blocks(monthly_tsv_rows: list[list[str]], i_date_column_i
             ["", vehicle_type_text],
             ["", note_text],
         ]
-        list_daily_blocks.append((i_block_start_index, daily_block))
+        list_daily_blocks.append(daily_block)
 
-    list_daily_blocks.sort(key=lambda block_item: sort_key_for_vehicle_type(block_item[1][1][1], block_item[0]))
-    return [daily_block for _, daily_block in list_daily_blocks]
+    return list_daily_blocks
 
 
 def build_daily_tsv_rows(monthly_tsv_rows: list[list[str]], i_date_column_index: int, date_text: str) -> list[list[str]]:
     """Build TSV rows for a single date column."""
     daily_tsv_rows = [[get_cell_value(monthly_tsv_rows[0], 0), date_text]]
-    for daily_block in build_sorted_daily_blocks(monthly_tsv_rows, i_date_column_index):
+    for daily_block in build_daily_blocks(monthly_tsv_rows, i_date_column_index):
         daily_tsv_rows.extend(daily_block)
     return daily_tsv_rows
 
