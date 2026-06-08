@@ -682,11 +682,12 @@ def get_monthly_step0002_target_dates(sample_step0002_tsv_file_path: Path) -> li
 def build_monthly_step0002_tsv_rows(
     sample_step0002_tsv_file_path: Path,
     dict_daily_blocks_by_date: dict[datetime, list[list[list[str]]]],
+    first_column_header: str,
 ) -> list[list[str]]:
     """Build monthly step0002 TSV rows from daily step0002 blocks."""
     list_target_dates = get_monthly_step0002_target_dates(sample_step0002_tsv_file_path)
     i_max_block_count = max((len(dict_daily_blocks_by_date.get(target_date, [])) for target_date in list_target_dates), default=0)
-    monthly_header_row = ["NO"] + [format_monthly_step0002_header_date(target_date) for target_date in list_target_dates]
+    monthly_header_row = [first_column_header] + [format_monthly_step0002_header_date(target_date) for target_date in list_target_dates]
     monthly_step0002_tsv_rows: list[list[str]] = [monthly_header_row]
 
     for i_block_index in range(i_max_block_count):
@@ -726,6 +727,8 @@ def write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths: list[Path]) ->
         parse_step0002_daily_date(step0002_tsv_file_path): step0002_tsv_file_path
         for step0002_tsv_file_path in list_step0002_daily_tsv_file_paths
     }
+    sample_step0002_tsv_rows = read_tsv_rows(sample_step0002_tsv_file_path)
+    first_column_header = get_cell_value(sample_step0002_tsv_rows[0], 0) if len(sample_step0002_tsv_rows) > 0 else ""
     dict_daily_blocks_by_date: dict[datetime, list[list[list[str]]]] = {}
     list_created_file_paths: list[Path] = []
 
@@ -741,7 +744,11 @@ def write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths: list[Path]) ->
         dict_daily_blocks_by_date[target_date] = read_step0002_daily_blocks(step0002_tsv_rows)
 
     monthly_step0002_tsv_file_path = build_monthly_step0002_tsv_file_path(sample_step0002_tsv_file_path)
-    monthly_step0002_tsv_rows = build_monthly_step0002_tsv_rows(sample_step0002_tsv_file_path, dict_daily_blocks_by_date)
+    monthly_step0002_tsv_rows = build_monthly_step0002_tsv_rows(
+        sample_step0002_tsv_file_path,
+        dict_daily_blocks_by_date,
+        first_column_header,
+    )
     write_tsv_rows(monthly_step0002_tsv_file_path, monthly_step0002_tsv_rows)
     list_created_file_paths.insert(0, monthly_step0002_tsv_file_path)
     return list_created_file_paths
