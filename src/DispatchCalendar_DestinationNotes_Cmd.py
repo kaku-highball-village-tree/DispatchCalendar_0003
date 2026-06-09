@@ -792,6 +792,54 @@ def read_step0002_daily_blocks(step0002_tsv_rows: list[list[str]]) -> list[list[
     return read_step0001_daily_blocks(step0002_tsv_rows)
 
 
+def build_step0003_tsv_file_path(step0002_tsv_file_path: Path) -> Path:
+    """Build a step0003 TSV output path from a step0002 TSV path."""
+    if "_step0002_" not in step0002_tsv_file_path.name:
+        raise RuntimeError(f"step0002 TSVファイル名ではありません: {step0002_tsv_file_path}")
+
+    step0003_file_name = step0002_tsv_file_path.name.replace("_step0002_", "_step0003_", 1)
+    return step0002_tsv_file_path.with_name(step0003_file_name)
+
+
+def build_step0003_tsv_rows(step0002_tsv_rows: list[list[str]]) -> list[list[str]]:
+    """Build step0003 TSV rows by joining each step0002 three-row block with comma-space text."""
+    if len(step0002_tsv_rows) == 0:
+        raise RuntimeError("step0002 TSVに行がありません。")
+
+    step0003_tsv_rows = [step0002_tsv_rows[0]]
+    for daily_block in read_step0002_daily_blocks(step0002_tsv_rows):
+        no_text = get_cell_value(daily_block[0], 0)
+        joined_text = ", ".join([
+            get_cell_value(daily_block[0], 1),
+            get_cell_value(daily_block[1], 1),
+            get_cell_value(daily_block[2], 1),
+        ])
+        step0003_tsv_rows.append([no_text, joined_text])
+
+    return step0003_tsv_rows
+
+
+def write_step0003_daily_tsv_file(step0002_tsv_file_path: Path) -> Path:
+    """Create a step0003 TSV file from a step0002 TSV file."""
+    step0002_tsv_rows = read_tsv_rows(step0002_tsv_file_path)
+    step0003_tsv_rows = build_step0003_tsv_rows(step0002_tsv_rows)
+    step0003_tsv_file_path = build_step0003_tsv_file_path(step0002_tsv_file_path)
+    write_tsv_rows(step0003_tsv_file_path, step0003_tsv_rows)
+    return step0003_tsv_file_path
+
+
+def write_step0003_daily_tsv_files(list_step0002_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create step0003 TSV files from provided step0002 TSV files."""
+    list_created_file_paths: list[Path] = []
+    for step0002_tsv_file_path in list_step0002_tsv_file_paths:
+        if step0002_tsv_file_path.suffix.lower() != ".tsv" or "_step0002_" not in step0002_tsv_file_path.name:
+            continue
+
+        list_created_file_paths.append(write_step0003_daily_tsv_file(step0002_tsv_file_path))
+
+    return list_created_file_paths
+
+
 def write_missing_step0002_error_file(step0002_tsv_file_path: Path, target_date: datetime) -> Path:
     """Write an error file for a missing step0002 daily TSV file."""
     step0002_error_file_path = build_step0002_error_file_path(step0002_tsv_file_path)
@@ -905,6 +953,7 @@ def main() -> int:
         list_daily_tsv_file_paths = write_step0001_daily_tsv_files(tsv_file_path)
         list_monthly_step0001_file_paths = write_monthly_step0001_tsv_file(list_daily_tsv_file_paths)
         list_step0002_tsv_file_paths = write_step0002_daily_tsv_files(list_daily_tsv_file_paths)
+        list_step0003_tsv_file_paths = write_step0003_daily_tsv_files(list_step0002_tsv_file_paths)
         list_monthly_step0002_file_paths = write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths)
     except Exception as exception:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
@@ -917,6 +966,8 @@ def main() -> int:
         print(monthly_step0001_file_path)
     for step0002_tsv_file_path in list_step0002_tsv_file_paths:
         print(step0002_tsv_file_path)
+    for step0003_tsv_file_path in list_step0003_tsv_file_paths:
+        print(step0003_tsv_file_path)
     for monthly_step0002_file_path in list_monthly_step0002_file_paths:
         print(monthly_step0002_file_path)
     return 0
