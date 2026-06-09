@@ -875,6 +875,41 @@ def write_step0004_daily_tsv_files(list_step0003_tsv_file_paths: list[Path]) -> 
     return list_created_file_paths
 
 
+def build_step0010_tsv_file_path(step0004_tsv_file_path: Path) -> Path:
+    """Build a step0010 TSV output path from a step0004 TSV path."""
+    if "_step0004_" not in step0004_tsv_file_path.name:
+        raise RuntimeError(f"step0004 TSVファイル名ではありません: {step0004_tsv_file_path}")
+
+    step0010_file_name = step0004_tsv_file_path.name.replace("_step0004_", "_step0010_", 1)
+    return step0004_tsv_file_path.with_name(step0010_file_name)
+
+
+def build_step0010_tsv_rows(step0004_tsv_rows: list[list[str]]) -> list[list[str]]:
+    """Build step0010 TSV rows by preserving step0004 rows."""
+    return [step0004_tsv_row[:] for step0004_tsv_row in step0004_tsv_rows]
+
+
+def write_step0010_daily_tsv_file(step0004_tsv_file_path: Path) -> Path:
+    """Create a step0010 TSV file from a step0004 TSV file."""
+    step0004_tsv_rows = read_tsv_rows(step0004_tsv_file_path)
+    step0010_tsv_rows = build_step0010_tsv_rows(step0004_tsv_rows)
+    step0010_tsv_file_path = build_step0010_tsv_file_path(step0004_tsv_file_path)
+    write_tsv_rows(step0010_tsv_file_path, step0010_tsv_rows)
+    return step0010_tsv_file_path
+
+
+def write_step0010_daily_tsv_files(list_step0004_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create step0010 TSV files from provided step0004 TSV files."""
+    list_created_file_paths: list[Path] = []
+    for step0004_tsv_file_path in list_step0004_tsv_file_paths:
+        if step0004_tsv_file_path.suffix.lower() != ".tsv" or "_step0004_" not in step0004_tsv_file_path.name:
+            continue
+
+        list_created_file_paths.append(write_step0010_daily_tsv_file(step0004_tsv_file_path))
+
+    return list_created_file_paths
+
+
 def parse_step0003_daily_date(step0003_tsv_file_path: Path) -> datetime:
     """Parse a date from a step0003 daily TSV file name."""
     match = re.fullmatch(r"(.+_step0003_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0003_tsv_file_path.name)
@@ -1118,6 +1153,7 @@ def main() -> int:
         list_step0003_tsv_file_paths = write_step0003_daily_tsv_files(list_step0002_tsv_file_paths)
         list_monthly_step0003_file_paths = write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths)
         list_step0004_tsv_file_paths = write_step0004_daily_tsv_files(list_step0003_tsv_file_paths)
+        list_step0010_tsv_file_paths = write_step0010_daily_tsv_files(list_step0004_tsv_file_paths)
         list_monthly_step0002_file_paths = write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths)
     except Exception as exception:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
@@ -1136,6 +1172,8 @@ def main() -> int:
         print(monthly_step0003_file_path)
     for step0004_tsv_file_path in list_step0004_tsv_file_paths:
         print(step0004_tsv_file_path)
+    for step0010_tsv_file_path in list_step0010_tsv_file_paths:
+        print(step0010_tsv_file_path)
     for monthly_step0002_file_path in list_monthly_step0002_file_paths:
         print(monthly_step0002_file_path)
     return 0
