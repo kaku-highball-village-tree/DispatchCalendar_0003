@@ -875,6 +875,133 @@ def write_step0004_daily_tsv_files(list_step0003_tsv_file_paths: list[Path]) -> 
     return list_created_file_paths
 
 
+def parse_step0003_daily_date(step0003_tsv_file_path: Path) -> datetime:
+    """Parse a date from a step0003 daily TSV file name."""
+    match = re.fullmatch(r"(.+_step0003_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0003_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0003日別TSVファイル名の日付を解析できません: {step0003_tsv_file_path}")
+
+    return datetime(int(match.group(2)), int(match.group(3)), int(match.group(4)))
+
+
+def get_step0003_daily_file_prefix(step0003_tsv_file_path: Path) -> str:
+    """Return the file-name prefix before the date in a step0003 daily TSV path."""
+    match = re.fullmatch(r"(.+_step0003_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0003_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0003日別TSVファイル名を解析できません: {step0003_tsv_file_path}")
+
+    return match.group(1)
+
+
+def build_step0003_daily_tsv_file_path(sample_step0003_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Build an expected step0003 daily TSV path for a target date."""
+    step0003_file_prefix = get_step0003_daily_file_prefix(sample_step0003_tsv_file_path)
+    step0003_file_name = f"{step0003_file_prefix}{target_date.year}年{target_date.month:02d}月{target_date.day:02d}日.tsv"
+    return sample_step0003_tsv_file_path.with_name(step0003_file_name)
+
+
+def build_monthly_step0003_tsv_file_path(sample_step0003_tsv_file_path: Path) -> Path:
+    """Build a monthly step0003 TSV path from a daily step0003 TSV path."""
+    target_date = parse_step0003_daily_date(sample_step0003_tsv_file_path)
+    step0003_file_prefix = get_step0003_daily_file_prefix(sample_step0003_tsv_file_path)
+    step0003_file_name = f"{step0003_file_prefix}{target_date.year}年{target_date.month:02d}月.tsv"
+    return sample_step0003_tsv_file_path.with_name(step0003_file_name)
+
+
+def format_monthly_step0003_header_date(target_date: datetime) -> str:
+    """Format a date header for the monthly step0003 TSV."""
+    return f"{target_date.year}/{target_date.month}/{target_date.day}"
+
+
+def write_missing_step0003_error_file(step0003_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Write an error file for a missing step0003 daily TSV file."""
+    step0003_error_file_path = step0003_tsv_file_path.with_name(f"{step0003_tsv_file_path.name}_error.txt")
+    list_output_lines = [
+        f"対象ファイル: {step0003_tsv_file_path.name}",
+        "",
+        "[日別step0003ファイルなし]",
+        f"日付: {target_date.year}年{target_date.month:02d}月{target_date.day:02d}日",
+        "内容: 月間step0003作成時に、対象日のstep0003 TSVファイルが見つかりませんでした。",
+    ]
+    step0003_error_file_path.write_text("\n".join(list_output_lines).rstrip() + "\n", encoding="utf-8-sig")
+    return step0003_error_file_path
+
+
+def get_monthly_step0003_target_dates(sample_step0003_tsv_file_path: Path) -> list[datetime]:
+    """Return all dates in the month of a sample step0003 daily TSV path."""
+    target_date = parse_step0003_daily_date(sample_step0003_tsv_file_path)
+    i_last_day = get_last_day_of_month(target_date)
+    return [datetime(target_date.year, target_date.month, i_day) for i_day in range(1, i_last_day + 1)]
+
+
+def build_monthly_step0003_tsv_rows(
+    sample_step0003_tsv_file_path: Path,
+    dict_daily_rows_by_date: dict[datetime, list[list[str]]],
+    first_column_header: str,
+) -> list[list[str]]:
+    """Build monthly step0003 TSV rows from daily step0003 rows."""
+    list_target_dates = get_monthly_step0003_target_dates(sample_step0003_tsv_file_path)
+    i_max_row_count = max((len(dict_daily_rows_by_date.get(target_date, [])) for target_date in list_target_dates), default=0)
+    monthly_header_row = [first_column_header] + [format_monthly_step0003_header_date(target_date) for target_date in list_target_dates]
+    monthly_step0003_tsv_rows: list[list[str]] = [monthly_header_row]
+
+    for i_row_index in range(i_max_row_count):
+        monthly_row = [str(i_row_index + 1)]
+
+        for target_date in list_target_dates:
+            list_daily_rows = dict_daily_rows_by_date.get(target_date, [])
+            if i_row_index < len(list_daily_rows):
+                monthly_row.append(get_cell_value(list_daily_rows[i_row_index], 1))
+            else:
+                monthly_row.append("")
+
+        monthly_step0003_tsv_rows.append(monthly_row)
+
+    return monthly_step0003_tsv_rows
+
+
+def write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create a monthly step0003 TSV file from daily step0003 TSV files."""
+    list_step0003_daily_tsv_file_paths = [
+        step0003_tsv_file_path
+        for step0003_tsv_file_path in list_step0003_tsv_file_paths
+        if step0003_tsv_file_path.suffix.lower() == ".tsv" and "_step0003_" in step0003_tsv_file_path.name
+    ]
+    if len(list_step0003_daily_tsv_file_paths) == 0:
+        return []
+
+    sample_step0003_tsv_file_path = sorted(list_step0003_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    dict_step0003_daily_tsv_paths_by_date = {
+        parse_step0003_daily_date(step0003_tsv_file_path): step0003_tsv_file_path
+        for step0003_tsv_file_path in list_step0003_daily_tsv_file_paths
+    }
+    sample_step0003_tsv_rows = read_tsv_rows(sample_step0003_tsv_file_path)
+    first_column_header = get_cell_value(sample_step0003_tsv_rows[0], 0) if len(sample_step0003_tsv_rows) > 0 else ""
+    dict_daily_rows_by_date: dict[datetime, list[list[str]]] = {}
+    list_created_file_paths: list[Path] = []
+
+    for target_date in get_monthly_step0003_target_dates(sample_step0003_tsv_file_path):
+        step0003_tsv_file_path = dict_step0003_daily_tsv_paths_by_date.get(target_date)
+        if step0003_tsv_file_path is None:
+            missing_step0003_tsv_file_path = build_step0003_daily_tsv_file_path(sample_step0003_tsv_file_path, target_date)
+            list_created_file_paths.append(write_missing_step0003_error_file(missing_step0003_tsv_file_path, target_date))
+            dict_daily_rows_by_date[target_date] = []
+            continue
+
+        step0003_tsv_rows = read_tsv_rows(step0003_tsv_file_path)
+        dict_daily_rows_by_date[target_date] = step0003_tsv_rows[1:]
+
+    monthly_step0003_tsv_file_path = build_monthly_step0003_tsv_file_path(sample_step0003_tsv_file_path)
+    monthly_step0003_tsv_rows = build_monthly_step0003_tsv_rows(
+        sample_step0003_tsv_file_path,
+        dict_daily_rows_by_date,
+        first_column_header,
+    )
+    write_tsv_rows(monthly_step0003_tsv_file_path, monthly_step0003_tsv_rows)
+    list_created_file_paths.insert(0, monthly_step0003_tsv_file_path)
+    return list_created_file_paths
+
+
 def write_missing_step0002_error_file(step0002_tsv_file_path: Path, target_date: datetime) -> Path:
     """Write an error file for a missing step0002 daily TSV file."""
     step0002_error_file_path = build_step0002_error_file_path(step0002_tsv_file_path)
@@ -989,6 +1116,7 @@ def main() -> int:
         list_monthly_step0001_file_paths = write_monthly_step0001_tsv_file(list_daily_tsv_file_paths)
         list_step0002_tsv_file_paths = write_step0002_daily_tsv_files(list_daily_tsv_file_paths)
         list_step0003_tsv_file_paths = write_step0003_daily_tsv_files(list_step0002_tsv_file_paths)
+        list_monthly_step0003_file_paths = write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths)
         list_step0004_tsv_file_paths = write_step0004_daily_tsv_files(list_step0003_tsv_file_paths)
         list_monthly_step0002_file_paths = write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths)
     except Exception as exception:
@@ -1004,6 +1132,8 @@ def main() -> int:
         print(step0002_tsv_file_path)
     for step0003_tsv_file_path in list_step0003_tsv_file_paths:
         print(step0003_tsv_file_path)
+    for monthly_step0003_file_path in list_monthly_step0003_file_paths:
+        print(monthly_step0003_file_path)
     for step0004_tsv_file_path in list_step0004_tsv_file_paths:
         print(step0004_tsv_file_path)
     for monthly_step0002_file_path in list_monthly_step0002_file_paths:
