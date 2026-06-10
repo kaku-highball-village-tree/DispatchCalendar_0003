@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
+import argparse
 import csv
 import re
 import sys
@@ -22,6 +23,8 @@ TOKEN_FILE = Path("token") / "token.json"
 TIME_ZONE = "Asia/Tokyo"
 CALENDAR_ID = "primary"
 GOOGLE_CALENDAR_ID_FILE = Path("google_calendar_id.txt")
+GOOGLE_CALENDAR_COLOR_FILE = Path("google_calendar_color.txt")
+GOOGLE_CALENDAR_COLOR_NAME_TO_ID = {"黄色": "5", "青": "9", "赤": "11"}
 
 
 BUILT_IN_DATE_FORMAT_IDS = {
@@ -972,16 +975,85 @@ def get_google_credentials():
     return credentials
 
 
-def build_step0010_calendar_event_body(title_text: str, work_date: datetime) -> dict[str, object]:
+def read_google_calendar_color_settings() -> tuple[dict[str, str], list[str]]:
+    """Load vehicle type to Google Calendar colorId settings from google_calendar_color.txt."""
+    dict_vehicle_type_to_color_id: dict[str, str] = {}
+    list_error_lines: list[str] = []
+
+    if not GOOGLE_CALENDAR_COLOR_FILE.exists():
+        return dict_vehicle_type_to_color_id, list_error_lines
+
+    with GOOGLE_CALENDAR_COLOR_FILE.open(mode="r", encoding="utf-8") as google_calendar_color_file:
+        for line_number, line_text in enumerate(google_calendar_color_file, start=1):
+            stripped_line_text = line_text.rstrip("\r\n").lstrip("\ufeff")
+            if stripped_line_text.strip() == "":
+                continue
+
+            list_columns = [column_text.strip() for column_text in stripped_line_text.split("\t")]
+            if len(list_columns) != 2:
+                list_error_lines.append(
+                    f"google_calendar_color.txt line={line_number}, reason=row must have 2 tab-separated columns"
+                )
+                continue
+
+            vehicle_type, color_name = list_columns
+            if vehicle_type == "" or color_name == "":
+                list_error_lines.append(
+                    f"google_calendar_color.txt line={line_number}, reason=vehicle type/color name is empty"
+                )
+                continue
+
+            color_id = GOOGLE_CALENDAR_COLOR_NAME_TO_ID.get(color_name)
+            if color_id is None:
+                list_error_lines.append(
+                    "google_calendar_color.txt "
+                    f"line={line_number}, reason=unsupported color name, "
+                    f"vehicle_type={vehicle_type}, color_name={color_name}"
+                )
+                continue
+
+            dict_vehicle_type_to_color_id[vehicle_type] = color_id
+
+    return dict_vehicle_type_to_color_id, list_error_lines
+
+
+def get_step0010_vehicle_type(title_text: str, list_vehicle_types: list[str]) -> str | None:
+    """Return the vehicle type when step0010 title text starts with one of the configured vehicle types."""
+    normalized_title_text = title_text.strip()
+    for vehicle_type in sorted(list_vehicle_types, key=len, reverse=True):
+        if normalized_title_text.startswith(vehicle_type):
+            return vehicle_type
+
+    return None
+
+
+def get_step0010_calendar_color_id(title_text: str, dict_vehicle_type_to_color_id: dict[str, str]) -> str | None:
+    """Return the configured Google Calendar colorId for a step0010 title text."""
+    vehicle_type = get_step0010_vehicle_type(title_text, list(dict_vehicle_type_to_color_id.keys()))
+    if vehicle_type is None:
+        return None
+
+    return dict_vehicle_type_to_color_id[vehicle_type]
+
+
+def build_step0010_calendar_event_body(
+    title_text: str,
+    work_date: datetime,
+    color_id: str | None = None,
+) -> dict[str, object]:
     """Build a Google Calendar all-day event body from step0010 row text and work date."""
     end_date = work_date + timedelta(days=1)
-    return {
+    event_body: dict[str, object] = {
         "summary": title_text,
         "location": "",
         "description": "",
         "start": {"date": work_date.strftime("%Y-%m-%d"), "timeZone": TIME_ZONE},
         "end": {"date": end_date.strftime("%Y-%m-%d"), "timeZone": TIME_ZONE},
     }
+    if color_id is not None:
+        event_body["colorId"] = color_id
+
+    return event_body
 
 
 def write_step0010_registration_error_file(step0010_tsv_file_path: Path, list_error_lines: list[str]) -> Path:
@@ -1000,8 +1072,104 @@ def create_google_calendar_events_from_step0010_tsv(
     step0010_tsv_file_path: Path,
     google_calendar_service=None,
     calendar_id: str | None = None,
+    dict_vehicle_type_to_color_id: dict[str, str] | None = None,
+    list_color_error_lines: list[str] | None = None,
 ) -> tuple[int, int]:
     """Register Google Calendar all-day events from one step0010 TSV file."""
+    list_error_lines: list[str] = []
+    if list_color_error_lines is not None:
+        list_error_lines.extend(list_color_error_lines)
+
+    try:
+        work_date = parse_step0010_daily_date(step0010_tsv_file_path)
+    except Exception as exception:
+        write_step0010_registration_error_file(step0010_tsv_file_path, [f"line=0, reason={exception}"])
+        return 0, 1
+
+    step0010_tsv_rows = read_tsv_rows(step0010_tsv_file_path)
+    if len(step0010_tsv_rows) == 0:
+        return 0, 0
+
+    if google_calendar_service is None:
+        from googleapiclient.discovery import build
+
+        google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+
+    if calendar_id is None:
+        calendar_id = get_google_calendar_id()
+
+    if dict_vehicle_type_to_color_id is None:
+        dict_vehicle_type_to_color_id, loaded_color_error_lines = read_google_calendar_color_settings()
+        list_error_lines.extend(loaded_color_error_lines)
+
+    success_count = 0
+    skip_count = 0
+
+    for line_number, step0010_tsv_row in enumerate(step0010_tsv_rows[1:], start=2):
+        title_text = get_step0010_row_title_text(step0010_tsv_row)
+        if title_text == "":
+            skip_count += 1
+            list_error_lines.append(
+                f"line={line_number}, reason=title text is empty, work_date={work_date.strftime('%Y-%m-%d')}"
+            )
+            continue
+
+        try:
+            color_id = get_step0010_calendar_color_id(title_text, dict_vehicle_type_to_color_id)
+            event_body = build_step0010_calendar_event_body(title_text, work_date, color_id)
+            created_event = (
+                google_calendar_service.events()
+                .insert(calendarId=calendar_id, body=event_body)
+                .execute()
+            )
+            print(created_event.get("htmlLink", ""))
+            success_count += 1
+        except Exception as exception:
+            skip_count += 1
+            list_error_lines.append(
+                f"line={line_number}, reason={exception}, "
+                f"work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
+            )
+
+    if len(list_error_lines) > 0:
+        write_step0010_registration_error_file(step0010_tsv_file_path, list_error_lines)
+
+    return success_count, skip_count
+
+
+def create_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
+    """Register Google Calendar events from provided step0010 TSV files."""
+    from googleapiclient.discovery import build
+
+    google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+    calendar_id = get_google_calendar_id()
+    dict_vehicle_type_to_color_id, list_color_error_lines = read_google_calendar_color_settings()
+    total_success_count = 0
+    total_skip_count = 0
+
+    for step0010_tsv_file_path in list_step0010_tsv_file_paths:
+        if step0010_tsv_file_path.suffix.lower() != ".tsv" or "_step0010_" not in step0010_tsv_file_path.name:
+            continue
+
+        success_count, skip_count = create_google_calendar_events_from_step0010_tsv(
+            step0010_tsv_file_path,
+            google_calendar_service,
+            calendar_id,
+            dict_vehicle_type_to_color_id,
+            list_color_error_lines,
+        )
+        total_success_count += success_count
+        total_skip_count += skip_count
+
+    return total_success_count, total_skip_count
+
+
+def delete_google_calendar_events_from_step0010_tsv(
+    step0010_tsv_file_path: Path,
+    google_calendar_service=None,
+    calendar_id: str | None = None,
+) -> tuple[int, int]:
+    """Delete Google Calendar events matching one step0010 TSV file by date and summary."""
     list_error_lines: list[str] = []
     try:
         work_date = parse_step0010_daily_date(step0010_tsv_file_path)
@@ -1021,8 +1189,15 @@ def create_google_calendar_events_from_step0010_tsv(
     if calendar_id is None:
         calendar_id = get_google_calendar_id()
 
-    success_count = 0
+    deleted_count = 0
     skip_count = 0
+    time_min = work_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "+09:00"
+    time_max = (
+        (work_date + timedelta(days=1))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+        + "+09:00"
+    )
 
     for line_number, step0010_tsv_row in enumerate(step0010_tsv_rows[1:], start=2):
         title_text = get_step0010_row_title_text(step0010_tsv_row)
@@ -1034,48 +1209,70 @@ def create_google_calendar_events_from_step0010_tsv(
             continue
 
         try:
-            event_body = build_step0010_calendar_event_body(title_text, work_date)
-            created_event = (
+            response = (
                 google_calendar_service.events()
-                .insert(calendarId=calendar_id, body=event_body)
+                .list(
+                    calendarId=calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    singleEvents=True,
+                )
                 .execute()
             )
-            print(created_event.get("htmlLink", ""))
-            success_count += 1
+            matched_count = 0
+            for event_item in response.get("items", []):
+                if str(event_item.get("summary", "")).strip() != title_text:
+                    continue
+
+                event_id = str(event_item.get("id", ""))
+                if event_id == "":
+                    continue
+
+                google_calendar_service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+                deleted_count += 1
+                matched_count += 1
+
+            if matched_count == 0:
+                skip_count += 1
+                list_error_lines.append(
+                    f"line={line_number}, reason=matching event not found, "
+                    f"work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
+                )
         except Exception as exception:
             skip_count += 1
             list_error_lines.append(
-                f"line={line_number}, reason={exception}, work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
+                f"line={line_number}, reason={exception}, "
+                f"work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
             )
 
     if len(list_error_lines) > 0:
         write_step0010_registration_error_file(step0010_tsv_file_path, list_error_lines)
 
-    return success_count, skip_count
+    return deleted_count, skip_count
 
 
-def create_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
-    """Register Google Calendar events from provided step0010 TSV files."""
+def delete_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
+    """Delete Google Calendar events from provided step0010 TSV files."""
     from googleapiclient.discovery import build
 
     google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
     calendar_id = get_google_calendar_id()
-    total_success_count = 0
+    total_deleted_count = 0
     total_skip_count = 0
 
     for step0010_tsv_file_path in list_step0010_tsv_file_paths:
         if step0010_tsv_file_path.suffix.lower() != ".tsv" or "_step0010_" not in step0010_tsv_file_path.name:
             continue
 
-        success_count, skip_count = create_google_calendar_events_from_step0010_tsv(
+        deleted_count, skip_count = delete_google_calendar_events_from_step0010_tsv(
             step0010_tsv_file_path,
             google_calendar_service,
             calendar_id,
         )
-        total_success_count += success_count
+        total_deleted_count += deleted_count
         total_skip_count += skip_count
 
-    return total_success_count, total_skip_count
+    return total_deleted_count, total_skip_count
 
 
 def parse_step0003_daily_date(step0003_tsv_file_path: Path) -> datetime:
@@ -1302,12 +1499,17 @@ def write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths: list[Path]) ->
 
 
 def main() -> int:
-    """Read an Excel file path from the command line and create a same-named TSV."""
-    if len(sys.argv) != 2:
+    """Read an Excel file path from the command line and create DestinationNotes outputs."""
+    argument_parser = argparse.ArgumentParser(add_help=False)
+    argument_parser.add_argument("--mode", choices=["create", "delete"], default="create")
+    argument_parser.add_argument("excel_file_paths", nargs="*")
+    parsed_arguments = argument_parser.parse_args(sys.argv[1:])
+
+    if len(parsed_arguments.excel_file_paths) != 1:
         print("Excelファイル名を1つ指定してください。", file=sys.stderr)
         return 1
 
-    excel_file_path = Path(sys.argv[1]).resolve()
+    excel_file_path = Path(parsed_arguments.excel_file_paths[0]).resolve()
     error_message = validate_excel_file_path(excel_file_path)
     if error_message is not None:
         print(error_message, file=sys.stderr)
@@ -1322,9 +1524,14 @@ def main() -> int:
         list_monthly_step0003_file_paths = write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths)
         list_step0004_tsv_file_paths = write_step0004_daily_tsv_files(list_step0003_tsv_file_paths)
         list_step0010_tsv_file_paths = write_step0010_daily_tsv_files(list_step0004_tsv_file_paths)
-        google_registered_count, google_skipped_count = create_google_calendar_events_from_step0010_tsv_files(
-            list_step0010_tsv_file_paths
-        )
+        if parsed_arguments.mode == "delete":
+            google_processed_count, google_skipped_count = delete_google_calendar_events_from_step0010_tsv_files(
+                list_step0010_tsv_file_paths
+            )
+        else:
+            google_processed_count, google_skipped_count = create_google_calendar_events_from_step0010_tsv_files(
+                list_step0010_tsv_file_paths
+            )
         list_monthly_step0002_file_paths = write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths)
     except Exception as exception:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
@@ -1345,9 +1552,14 @@ def main() -> int:
         print(step0004_tsv_file_path)
     for step0010_tsv_file_path in list_step0010_tsv_file_paths:
         print(step0010_tsv_file_path)
-    print(
-        f"Google Calendar events created from step0010: {google_registered_count}, skipped: {google_skipped_count}"
-    )
+    if parsed_arguments.mode == "delete":
+        print(
+            f"Google Calendar events deleted from step0010: {google_processed_count}, skipped: {google_skipped_count}"
+        )
+    else:
+        print(
+            f"Google Calendar events created from step0010: {google_processed_count}, skipped: {google_skipped_count}"
+        )
     for monthly_step0002_file_path in list_monthly_step0002_file_paths:
         print(monthly_step0002_file_path)
     return 0
