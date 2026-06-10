@@ -1018,11 +1018,14 @@ def read_google_calendar_color_settings() -> tuple[dict[str, str], list[str]]:
 
 
 def get_step0010_vehicle_type(title_text: str, list_vehicle_types: list[str]) -> str | None:
-    """Return the vehicle type when step0010 title text starts with one of the configured vehicle types."""
-    normalized_title_text = title_text.strip()
-    for vehicle_type in sorted(list_vehicle_types, key=len, reverse=True):
-        if normalized_title_text.startswith(vehicle_type):
-            return vehicle_type
+    """Return the second comma-space separated field when it matches a configured vehicle type."""
+    list_title_fields = [field_text.strip() for field_text in title_text.split(", ")]
+    if len(list_title_fields) < 2:
+        return None
+
+    vehicle_type = list_title_fields[1]
+    if vehicle_type in list_vehicle_types:
+        return vehicle_type
 
     return None
 
