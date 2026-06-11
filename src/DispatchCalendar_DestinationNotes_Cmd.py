@@ -983,36 +983,47 @@ def read_google_calendar_color_settings() -> tuple[dict[str, str], list[str]]:
     if not GOOGLE_CALENDAR_COLOR_FILE.exists():
         return dict_vehicle_type_to_color_id, list_error_lines
 
-    with GOOGLE_CALENDAR_COLOR_FILE.open(mode="r", encoding="utf-8") as google_calendar_color_file:
-        for line_number, line_text in enumerate(google_calendar_color_file, start=1):
-            stripped_line_text = line_text.rstrip("\r\n").lstrip("\ufeff")
-            if stripped_line_text.strip() == "":
-                continue
+    last_decode_error: UnicodeDecodeError | None = None
+    for encoding_name in ("utf-8-sig", "cp932"):
+        try:
+            list_file_lines = GOOGLE_CALENDAR_COLOR_FILE.read_text(encoding=encoding_name).splitlines()
+            break
+        except UnicodeDecodeError as exception:
+            last_decode_error = exception
+    else:
+        if last_decode_error is not None:
+            raise last_decode_error
+        list_file_lines = []
 
-            list_columns = [column_text.strip() for column_text in stripped_line_text.split("\t")]
-            if len(list_columns) != 2:
-                list_error_lines.append(
-                    f"google_calendar_color.txt line={line_number}, reason=row must have 2 tab-separated columns"
-                )
-                continue
+    for line_number, line_text in enumerate(list_file_lines, start=1):
+        stripped_line_text = line_text.rstrip("\r\n").lstrip("\ufeff")
+        if stripped_line_text.strip() == "":
+            continue
 
-            vehicle_type, color_name = list_columns
-            if vehicle_type == "" or color_name == "":
-                list_error_lines.append(
-                    f"google_calendar_color.txt line={line_number}, reason=vehicle type/color name is empty"
-                )
-                continue
+        list_columns = [column_text.strip() for column_text in stripped_line_text.split("\t")]
+        if len(list_columns) != 2:
+            list_error_lines.append(
+                f"google_calendar_color.txt line={line_number}, reason=row must have 2 tab-separated columns"
+            )
+            continue
 
-            color_id = GOOGLE_CALENDAR_COLOR_NAME_TO_ID.get(color_name)
-            if color_id is None:
-                list_error_lines.append(
-                    "google_calendar_color.txt "
-                    f"line={line_number}, reason=unsupported color name, "
-                    f"vehicle_type={vehicle_type}, color_name={color_name}"
-                )
-                continue
+        vehicle_type, color_name = list_columns
+        if vehicle_type == "" or color_name == "":
+            list_error_lines.append(
+                f"google_calendar_color.txt line={line_number}, reason=vehicle type/color name is empty"
+            )
+            continue
 
-            dict_vehicle_type_to_color_id[vehicle_type] = color_id
+        color_id = GOOGLE_CALENDAR_COLOR_NAME_TO_ID.get(color_name)
+        if color_id is None:
+            list_error_lines.append(
+                "google_calendar_color.txt "
+                f"line={line_number}, reason=unsupported color name, "
+                f"vehicle_type={vehicle_type}, color_name={color_name}"
+            )
+            continue
+
+        dict_vehicle_type_to_color_id[vehicle_type] = color_id
 
     return dict_vehicle_type_to_color_id, list_error_lines
 
