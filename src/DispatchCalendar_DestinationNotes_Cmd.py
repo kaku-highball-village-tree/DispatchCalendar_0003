@@ -2,8 +2,11 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
+import argparse
 import csv
+import json
 import re
+import shutil
 import sys
 import zipfile
 from xml.etree import ElementTree
@@ -16,6 +19,15 @@ OFFICE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocumen
 VEHICLE_TYPE_SORT_ORDER = {"2t": 0, "4t": 1, "大型": 2}
 OTHER_VEHICLE_TYPE_SORT_INDEX = 3
 BLANK_VEHICLE_TYPE_SORT_INDEX = 4
+SCOPES: list[str] = ["https://www.googleapis.com/auth/calendar.events"]
+CREDENTIALS_FILE = Path("credentials") / "credentials.json"
+TOKEN_FILE = Path("token") / "token.json"
+TIME_ZONE = "Asia/Tokyo"
+CALENDAR_ID = "primary"
+GOOGLE_CALENDAR_ID_FILE = Path("google_calendar_id.txt")
+GOOGLE_CALENDAR_COLOR_FILE = Path("google_calendar_color.txt")
+GOOGLE_CALENDAR_COLOR_NAME_TO_ID = {"黄色": "5", "青": "9", "赤": "11"}
+EXCEL_BACKUP_DIRECTORY_NAME = "backup"
 
 
 BUILT_IN_DATE_FORMAT_IDS = {
@@ -65,6 +77,38 @@ def validate_excel_file_path(excel_file_path: Path) -> str | None:
         return f"Excelファイルではありません: {excel_file_path}"
 
     return None
+
+
+def build_excel_backup_file_path(excel_file_path: Path, backup_timestamp_text: str | None = None) -> Path:
+    """Build a non-overwriting backup path for the specified Excel file."""
+    if backup_timestamp_text is None:
+        backup_timestamp_text = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    backup_directory_path = excel_file_path.parent / EXCEL_BACKUP_DIRECTORY_NAME
+    backup_file_path = backup_directory_path / f"{backup_timestamp_text}_{excel_file_path.name}"
+    if not backup_file_path.exists():
+        return backup_file_path
+
+    for backup_index in range(1, 1000):
+        indexed_backup_file_path = (
+            backup_directory_path
+            / f"{backup_timestamp_text}_{excel_file_path.stem}_{backup_index:03d}{excel_file_path.suffix}"
+        )
+        if not indexed_backup_file_path.exists():
+            return indexed_backup_file_path
+
+    raise RuntimeError(f"Excelバックアップファイル名を決定できません: {backup_directory_path}")
+
+
+def backup_excel_file(excel_file_path: Path) -> Path:
+    """Copy the input Excel file into a sibling backup folder before processing."""
+    try:
+        backup_file_path = build_excel_backup_file_path(excel_file_path)
+        backup_file_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(excel_file_path, backup_file_path)
+        return backup_file_path
+    except Exception as exception:
+        raise RuntimeError(f"Excelバックアップに失敗しました。TSV作成・Googleカレンダー処理は実行していません。理由: {exception}") from exception
 
 
 def namespace_tag(namespace_uri: str, tag_name: str) -> str:
@@ -605,6 +649,140 @@ def write_step0002_daily_tsv_files(list_step0001_tsv_file_paths: list[Path]) -> 
     return list_created_file_paths
 
 
+def parse_step0001_daily_date(step0001_tsv_file_path: Path) -> datetime:
+    """Parse a date from a step0001 daily TSV file name."""
+    match = re.fullmatch(r"(.+_step0001_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0001_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0001日別TSVファイル名の日付を解析できません: {step0001_tsv_file_path}")
+
+    return datetime(int(match.group(2)), int(match.group(3)), int(match.group(4)))
+
+
+def get_step0001_daily_file_prefix(step0001_tsv_file_path: Path) -> str:
+    """Return the file-name prefix before the date in a step0001 daily TSV path."""
+    match = re.fullmatch(r"(.+_step0001_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0001_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0001日別TSVファイル名を解析できません: {step0001_tsv_file_path}")
+
+    return match.group(1)
+
+
+def build_step0001_daily_tsv_file_path(sample_step0001_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Build an expected step0001 daily TSV path for a target date."""
+    step0001_file_prefix = get_step0001_daily_file_prefix(sample_step0001_tsv_file_path)
+    step0001_file_name = f"{step0001_file_prefix}{target_date.year}年{target_date.month:02d}月{target_date.day:02d}日.tsv"
+    return sample_step0001_tsv_file_path.with_name(step0001_file_name)
+
+
+def build_monthly_step0001_tsv_file_path(sample_step0001_tsv_file_path: Path) -> Path:
+    """Build a monthly step0001 TSV path from a daily step0001 TSV path."""
+    target_date = parse_step0001_daily_date(sample_step0001_tsv_file_path)
+    step0001_file_prefix = get_step0001_daily_file_prefix(sample_step0001_tsv_file_path)
+    step0001_file_name = f"{step0001_file_prefix}{target_date.year}年{target_date.month:02d}月.tsv"
+    return sample_step0001_tsv_file_path.with_name(step0001_file_name)
+
+
+def format_monthly_step0001_header_date(target_date: datetime) -> str:
+    """Format a date header for the monthly step0001 TSV."""
+    return f"{target_date.year}/{target_date.month}/{target_date.day}"
+
+
+def write_missing_step0001_error_file(step0001_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Write an error file for a missing step0001 daily TSV file."""
+    step0001_error_file_path = step0001_tsv_file_path.with_name(f"{step0001_tsv_file_path.name}_error.txt")
+    list_output_lines = [
+        f"対象ファイル: {step0001_tsv_file_path.name}",
+        "",
+        "[日別step0001ファイルなし]",
+        f"日付: {target_date.year}年{target_date.month:02d}月{target_date.day:02d}日",
+        "内容: 月間step0001作成時に、対象日のstep0001 TSVファイルが見つかりませんでした。",
+    ]
+    step0001_error_file_path.write_text("\n".join(list_output_lines).rstrip() + "\n", encoding="utf-8-sig")
+    return step0001_error_file_path
+
+
+def get_monthly_step0001_target_dates(sample_step0001_tsv_file_path: Path) -> list[datetime]:
+    """Return all dates in the month of a sample step0001 daily TSV path."""
+    target_date = parse_step0001_daily_date(sample_step0001_tsv_file_path)
+    i_last_day = get_last_day_of_month(target_date)
+    return [datetime(target_date.year, target_date.month, i_day) for i_day in range(1, i_last_day + 1)]
+
+
+def build_monthly_step0001_tsv_rows(
+    sample_step0001_tsv_file_path: Path,
+    dict_daily_blocks_by_date: dict[datetime, list[list[list[str]]]],
+    first_column_header: str,
+) -> list[list[str]]:
+    """Build monthly step0001 TSV rows from daily step0001 blocks."""
+    list_target_dates = get_monthly_step0001_target_dates(sample_step0001_tsv_file_path)
+    i_max_block_count = max((len(dict_daily_blocks_by_date.get(target_date, [])) for target_date in list_target_dates), default=0)
+    monthly_header_row = [first_column_header] + [format_monthly_step0001_header_date(target_date) for target_date in list_target_dates]
+    monthly_step0001_tsv_rows: list[list[str]] = [monthly_header_row]
+
+    for i_block_index in range(i_max_block_count):
+        destination_row = [str(i_block_index + 1)]
+        vehicle_type_row = [""]
+        note_row = [""]
+
+        for target_date in list_target_dates:
+            list_daily_blocks = dict_daily_blocks_by_date.get(target_date, [])
+            if i_block_index < len(list_daily_blocks):
+                daily_block = list_daily_blocks[i_block_index]
+                destination_row.append(get_cell_value(daily_block[0], 1))
+                vehicle_type_row.append(get_cell_value(daily_block[1], 1))
+                note_row.append(get_cell_value(daily_block[2], 1))
+            else:
+                destination_row.append("")
+                vehicle_type_row.append("")
+                note_row.append("")
+
+        monthly_step0001_tsv_rows.extend([destination_row, vehicle_type_row, note_row])
+
+    return monthly_step0001_tsv_rows
+
+
+def write_monthly_step0001_tsv_file(list_step0001_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create a monthly step0001 TSV file from daily step0001 TSV files."""
+    list_step0001_daily_tsv_file_paths = [
+        step0001_tsv_file_path
+        for step0001_tsv_file_path in list_step0001_tsv_file_paths
+        if step0001_tsv_file_path.suffix.lower() == ".tsv" and "_step0001_" in step0001_tsv_file_path.name
+    ]
+    if len(list_step0001_daily_tsv_file_paths) == 0:
+        return []
+
+    sample_step0001_tsv_file_path = sorted(list_step0001_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    dict_step0001_daily_tsv_paths_by_date = {
+        parse_step0001_daily_date(step0001_tsv_file_path): step0001_tsv_file_path
+        for step0001_tsv_file_path in list_step0001_daily_tsv_file_paths
+    }
+    sample_step0001_tsv_rows = read_tsv_rows(sample_step0001_tsv_file_path)
+    first_column_header = get_cell_value(sample_step0001_tsv_rows[0], 0) if len(sample_step0001_tsv_rows) > 0 else ""
+    dict_daily_blocks_by_date: dict[datetime, list[list[list[str]]]] = {}
+    list_created_file_paths: list[Path] = []
+
+    for target_date in get_monthly_step0001_target_dates(sample_step0001_tsv_file_path):
+        step0001_tsv_file_path = dict_step0001_daily_tsv_paths_by_date.get(target_date)
+        if step0001_tsv_file_path is None:
+            missing_step0001_tsv_file_path = build_step0001_daily_tsv_file_path(sample_step0001_tsv_file_path, target_date)
+            list_created_file_paths.append(write_missing_step0001_error_file(missing_step0001_tsv_file_path, target_date))
+            dict_daily_blocks_by_date[target_date] = []
+            continue
+
+        step0001_tsv_rows = read_tsv_rows(step0001_tsv_file_path)
+        dict_daily_blocks_by_date[target_date] = read_step0001_daily_blocks(step0001_tsv_rows)
+
+    monthly_step0001_tsv_file_path = build_monthly_step0001_tsv_file_path(sample_step0001_tsv_file_path)
+    monthly_step0001_tsv_rows = build_monthly_step0001_tsv_rows(
+        sample_step0001_tsv_file_path,
+        dict_daily_blocks_by_date,
+        first_column_header,
+    )
+    write_tsv_rows(monthly_step0001_tsv_file_path, monthly_step0001_tsv_rows)
+    list_created_file_paths.insert(0, monthly_step0001_tsv_file_path)
+    return list_created_file_paths
+
+
 def parse_step0002_daily_date(step0002_tsv_file_path: Path) -> datetime:
     """Parse a date from a step0002 daily TSV file name."""
     match = re.fullmatch(r"(.+_step0002_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0002_tsv_file_path.name)
@@ -656,6 +834,1004 @@ def format_monthly_step0002_header_date(target_date: datetime) -> str:
 def read_step0002_daily_blocks(step0002_tsv_rows: list[list[str]]) -> list[list[list[str]]]:
     """Read three-row daily blocks from step0002 TSV rows."""
     return read_step0001_daily_blocks(step0002_tsv_rows)
+
+
+def build_step0003_tsv_file_path(step0002_tsv_file_path: Path) -> Path:
+    """Build a step0003 TSV output path from a step0002 TSV path."""
+    if "_step0002_" not in step0002_tsv_file_path.name:
+        raise RuntimeError(f"step0002 TSVファイル名ではありません: {step0002_tsv_file_path}")
+
+    step0003_file_name = step0002_tsv_file_path.name.replace("_step0002_", "_step0003_", 1)
+    return step0002_tsv_file_path.with_name(step0003_file_name)
+
+
+def build_step0003_tsv_rows(step0002_tsv_rows: list[list[str]]) -> list[list[str]]:
+    """Build step0003 TSV rows by joining each step0002 three-row block with comma-space text."""
+    if len(step0002_tsv_rows) == 0:
+        raise RuntimeError("step0002 TSVに行がありません。")
+
+    step0003_tsv_rows = [step0002_tsv_rows[0]]
+    for daily_block in read_step0002_daily_blocks(step0002_tsv_rows):
+        no_text = get_cell_value(daily_block[0], 0)
+        joined_text = ", ".join([
+            get_cell_value(daily_block[0], 1),
+            get_cell_value(daily_block[1], 1),
+            get_cell_value(daily_block[2], 1),
+        ])
+        step0003_tsv_rows.append([no_text, joined_text])
+
+    return step0003_tsv_rows
+
+
+def write_step0003_daily_tsv_file(step0002_tsv_file_path: Path) -> Path:
+    """Create a step0003 TSV file from a step0002 TSV file."""
+    step0002_tsv_rows = read_tsv_rows(step0002_tsv_file_path)
+    step0003_tsv_rows = build_step0003_tsv_rows(step0002_tsv_rows)
+    step0003_tsv_file_path = build_step0003_tsv_file_path(step0002_tsv_file_path)
+    write_tsv_rows(step0003_tsv_file_path, step0003_tsv_rows)
+    return step0003_tsv_file_path
+
+
+def write_step0003_daily_tsv_files(list_step0002_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create step0003 TSV files from provided step0002 TSV files."""
+    list_created_file_paths: list[Path] = []
+    for step0002_tsv_file_path in list_step0002_tsv_file_paths:
+        if step0002_tsv_file_path.suffix.lower() != ".tsv" or "_step0002_" not in step0002_tsv_file_path.name:
+            continue
+
+        list_created_file_paths.append(write_step0003_daily_tsv_file(step0002_tsv_file_path))
+
+    return list_created_file_paths
+
+
+def build_step0004_tsv_file_path(step0003_tsv_file_path: Path) -> Path:
+    """Build a step0004 TSV output path from a step0003 TSV path."""
+    if "_step0003_" not in step0003_tsv_file_path.name:
+        raise RuntimeError(f"step0003 TSVファイル名ではありません: {step0003_tsv_file_path}")
+
+    step0004_file_name = step0003_tsv_file_path.name.replace("_step0003_", "_step0004_", 1)
+    return step0003_tsv_file_path.with_name(step0004_file_name)
+
+
+def build_step0004_tsv_rows(step0003_tsv_rows: list[list[str]]) -> list[list[str]]:
+    """Build step0004 TSV rows by removing the first column from each step0003 row."""
+    return [step0003_tsv_row[1:] for step0003_tsv_row in step0003_tsv_rows]
+
+
+def write_step0004_daily_tsv_file(step0003_tsv_file_path: Path) -> Path:
+    """Create a step0004 TSV file from a step0003 TSV file."""
+    step0003_tsv_rows = read_tsv_rows(step0003_tsv_file_path)
+    step0004_tsv_rows = build_step0004_tsv_rows(step0003_tsv_rows)
+    step0004_tsv_file_path = build_step0004_tsv_file_path(step0003_tsv_file_path)
+    write_tsv_rows(step0004_tsv_file_path, step0004_tsv_rows)
+    return step0004_tsv_file_path
+
+
+def write_step0004_daily_tsv_files(list_step0003_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create step0004 TSV files from provided step0003 TSV files."""
+    list_created_file_paths: list[Path] = []
+    for step0003_tsv_file_path in list_step0003_tsv_file_paths:
+        if step0003_tsv_file_path.suffix.lower() != ".tsv" or "_step0003_" not in step0003_tsv_file_path.name:
+            continue
+
+        list_created_file_paths.append(write_step0004_daily_tsv_file(step0003_tsv_file_path))
+
+    return list_created_file_paths
+
+
+def build_step0010_tsv_file_path(step0004_tsv_file_path: Path) -> Path:
+    """Build a step0010 TSV output path from a step0004 TSV path."""
+    if "_step0004_" not in step0004_tsv_file_path.name:
+        raise RuntimeError(f"step0004 TSVファイル名ではありません: {step0004_tsv_file_path}")
+
+    step0010_file_name = step0004_tsv_file_path.name.replace("_step0004_", "_step0010_", 1)
+    return step0004_tsv_file_path.with_name(step0010_file_name)
+
+
+def build_step0010_tsv_rows(step0004_tsv_rows: list[list[str]]) -> list[list[str]]:
+    """Build step0010 TSV rows by preserving step0004 rows."""
+    return [step0004_tsv_row[:] for step0004_tsv_row in step0004_tsv_rows]
+
+
+def write_step0010_daily_tsv_file(step0004_tsv_file_path: Path) -> Path:
+    """Create a step0010 TSV file from a step0004 TSV file."""
+    step0004_tsv_rows = read_tsv_rows(step0004_tsv_file_path)
+    step0010_tsv_rows = build_step0010_tsv_rows(step0004_tsv_rows)
+    step0010_tsv_file_path = build_step0010_tsv_file_path(step0004_tsv_file_path)
+    write_tsv_rows(step0010_tsv_file_path, step0010_tsv_rows)
+    return step0010_tsv_file_path
+
+
+def write_step0010_daily_tsv_files(list_step0004_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create step0010 TSV files from provided step0004 TSV files."""
+    list_created_file_paths: list[Path] = []
+    for step0004_tsv_file_path in list_step0004_tsv_file_paths:
+        if step0004_tsv_file_path.suffix.lower() != ".tsv" or "_step0004_" not in step0004_tsv_file_path.name:
+            continue
+
+        list_created_file_paths.append(write_step0010_daily_tsv_file(step0004_tsv_file_path))
+
+    return list_created_file_paths
+
+
+def parse_step0010_daily_date(step0010_tsv_file_path: Path) -> datetime:
+    """Parse a date from a step0010 daily TSV file name."""
+    match = re.fullmatch(r"(.+_step0010_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0010_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0010日別TSVファイル名の日付を解析できません: {step0010_tsv_file_path}")
+
+    return datetime(int(match.group(2)), int(match.group(3)), int(match.group(4)))
+
+
+def get_step0010_daily_file_prefix(step0010_tsv_file_path: Path) -> str:
+    """Return the file-name prefix before the date in a step0010 daily TSV path."""
+    match = re.fullmatch(r"(.+_step0010_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0010_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0010日別TSVファイル名を解析できません: {step0010_tsv_file_path}")
+
+    return match.group(1)
+
+
+def build_step0010_daily_tsv_file_path(sample_step0010_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Build an expected step0010 daily TSV path for a target date."""
+    step0010_file_prefix = get_step0010_daily_file_prefix(sample_step0010_tsv_file_path)
+    step0010_file_name = f"{step0010_file_prefix}{target_date.year}年{target_date.month:02d}月{target_date.day:02d}日.tsv"
+    return sample_step0010_tsv_file_path.with_name(step0010_file_name)
+
+
+def build_monthly_step0010_tsv_file_path(sample_step0010_tsv_file_path: Path) -> Path:
+    """Build a monthly step0010 TSV path from a daily step0010 TSV path."""
+    target_date = parse_step0010_daily_date(sample_step0010_tsv_file_path)
+    step0010_file_prefix = get_step0010_daily_file_prefix(sample_step0010_tsv_file_path)
+    step0010_file_name = f"{step0010_file_prefix}{target_date.year}年{target_date.month:02d}月.tsv"
+    return sample_step0010_tsv_file_path.with_name(step0010_file_name)
+
+
+def build_step0010_registered_events_file_path(sample_step0010_tsv_file_path: Path) -> Path:
+    """Build a monthly registered-events JSON path from a daily step0010 TSV path."""
+    monthly_step0010_tsv_file_path = build_monthly_step0010_tsv_file_path(sample_step0010_tsv_file_path)
+    return monthly_step0010_tsv_file_path.with_name(f"{monthly_step0010_tsv_file_path.stem}_registered_events.json")
+
+
+def format_monthly_step0010_header_date(target_date: datetime) -> str:
+    """Format a date header for the monthly step0010 TSV."""
+    return f"{target_date.year}/{target_date.month}/{target_date.day}"
+
+
+def write_missing_step0010_error_file(step0010_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Write an error file for a missing step0010 daily TSV file."""
+    step0010_error_file_path = step0010_tsv_file_path.with_name(f"{step0010_tsv_file_path.name}_error.txt")
+    list_output_lines = [
+        f"対象ファイル: {step0010_tsv_file_path.name}",
+        "",
+        "[日別step0010ファイルなし]",
+        f"日付: {target_date.year}年{target_date.month:02d}月{target_date.day:02d}日",
+        "内容: 月間step0010作成時に、対象日のstep0010 TSVファイルが見つかりませんでした。",
+    ]
+    step0010_error_file_path.write_text("\n".join(list_output_lines).rstrip() + "\n", encoding="utf-8-sig")
+    return step0010_error_file_path
+
+
+def get_monthly_step0010_target_dates(sample_step0010_tsv_file_path: Path) -> list[datetime]:
+    """Return all dates in the month of a sample step0010 daily TSV path."""
+    target_date = parse_step0010_daily_date(sample_step0010_tsv_file_path)
+    i_last_day = get_last_day_of_month(target_date)
+    return [datetime(target_date.year, target_date.month, i_day) for i_day in range(1, i_last_day + 1)]
+
+
+def build_monthly_step0010_tsv_rows(
+    sample_step0010_tsv_file_path: Path,
+    dict_daily_rows_by_date: dict[datetime, list[list[str]]],
+    first_column_header: str,
+) -> list[list[str]]:
+    """Build monthly step0010 TSV rows from daily step0010 rows."""
+    list_target_dates = get_monthly_step0010_target_dates(sample_step0010_tsv_file_path)
+    i_max_row_count = max((len(dict_daily_rows_by_date.get(target_date, [])) for target_date in list_target_dates), default=0)
+    monthly_header_row = [first_column_header] + [format_monthly_step0010_header_date(target_date) for target_date in list_target_dates]
+    monthly_step0010_tsv_rows: list[list[str]] = [monthly_header_row]
+
+    for i_row_index in range(i_max_row_count):
+        monthly_row = [str(i_row_index + 1)]
+
+        for target_date in list_target_dates:
+            list_daily_rows = dict_daily_rows_by_date.get(target_date, [])
+            if i_row_index < len(list_daily_rows):
+                monthly_row.append(get_step0010_row_title_text(list_daily_rows[i_row_index]))
+            else:
+                monthly_row.append("")
+
+        monthly_step0010_tsv_rows.append(monthly_row)
+
+    return monthly_step0010_tsv_rows
+
+
+def write_monthly_step0010_tsv_file(list_step0010_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create a monthly step0010 TSV file from daily step0010 TSV files."""
+    list_step0010_daily_tsv_file_paths = [
+        step0010_tsv_file_path
+        for step0010_tsv_file_path in list_step0010_tsv_file_paths
+        if step0010_tsv_file_path.suffix.lower() == ".tsv" and "_step0010_" in step0010_tsv_file_path.name
+    ]
+    if len(list_step0010_daily_tsv_file_paths) == 0:
+        return []
+
+    sample_step0010_tsv_file_path = sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    dict_step0010_daily_tsv_paths_by_date = {
+        parse_step0010_daily_date(step0010_tsv_file_path): step0010_tsv_file_path
+        for step0010_tsv_file_path in list_step0010_daily_tsv_file_paths
+    }
+    sample_step0010_tsv_rows = read_tsv_rows(sample_step0010_tsv_file_path)
+    first_column_header = get_cell_value(sample_step0010_tsv_rows[0], 0) if len(sample_step0010_tsv_rows) > 0 else ""
+    dict_daily_rows_by_date: dict[datetime, list[list[str]]] = {}
+    list_created_file_paths: list[Path] = []
+
+    for target_date in get_monthly_step0010_target_dates(sample_step0010_tsv_file_path):
+        step0010_tsv_file_path = dict_step0010_daily_tsv_paths_by_date.get(target_date)
+        if step0010_tsv_file_path is None:
+            missing_step0010_tsv_file_path = build_step0010_daily_tsv_file_path(sample_step0010_tsv_file_path, target_date)
+            list_created_file_paths.append(write_missing_step0010_error_file(missing_step0010_tsv_file_path, target_date))
+            dict_daily_rows_by_date[target_date] = []
+            continue
+
+        step0010_tsv_rows = read_tsv_rows(step0010_tsv_file_path)
+        dict_daily_rows_by_date[target_date] = step0010_tsv_rows[1:]
+
+    monthly_step0010_tsv_file_path = build_monthly_step0010_tsv_file_path(sample_step0010_tsv_file_path)
+    monthly_step0010_tsv_rows = build_monthly_step0010_tsv_rows(
+        sample_step0010_tsv_file_path,
+        dict_daily_rows_by_date,
+        first_column_header,
+    )
+    write_tsv_rows(monthly_step0010_tsv_file_path, monthly_step0010_tsv_rows)
+    list_created_file_paths.insert(0, monthly_step0010_tsv_file_path)
+    return list_created_file_paths
+
+
+def get_google_calendar_id() -> str:
+    """Load the target Google Calendar ID from google_calendar_id.txt, or use primary."""
+    if not GOOGLE_CALENDAR_ID_FILE.exists():
+        return CALENDAR_ID
+
+    with GOOGLE_CALENDAR_ID_FILE.open(mode="r", encoding="utf-8") as calendar_id_file:
+        for line_text in calendar_id_file:
+            calendar_id = line_text.strip().lstrip("\ufeff")
+            if calendar_id != "":
+                return calendar_id
+
+    return CALENDAR_ID
+
+
+def get_google_credentials():
+    """Load credentials from token.json or run OAuth flow if needed."""
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    if not CREDENTIALS_FILE.exists():
+        raise FileNotFoundError("credentials/credentials.json が見つかりません。")
+
+    credentials = None
+    if TOKEN_FILE.exists():
+        try:
+            credentials = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+        except Exception:
+            credentials = None
+
+    if not credentials or not credentials.valid:
+        if credentials and credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(Request())
+            except Exception:
+                credentials = None
+
+        if not credentials or not credentials.valid:
+            flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
+            credentials = flow.run_local_server(port=0)
+
+        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(credentials.to_json(), encoding="utf-8")
+
+    return credentials
+
+
+def read_google_calendar_color_settings() -> tuple[dict[str, str], list[str]]:
+    """Load vehicle type to Google Calendar colorId settings from google_calendar_color.txt."""
+    dict_vehicle_type_to_color_id: dict[str, str] = {}
+    list_error_lines: list[str] = []
+
+    if not GOOGLE_CALENDAR_COLOR_FILE.exists():
+        return dict_vehicle_type_to_color_id, list_error_lines
+
+    last_decode_error: UnicodeDecodeError | None = None
+    for encoding_name in ("utf-8-sig", "cp932"):
+        try:
+            list_file_lines = GOOGLE_CALENDAR_COLOR_FILE.read_text(encoding=encoding_name).splitlines()
+            break
+        except UnicodeDecodeError as exception:
+            last_decode_error = exception
+    else:
+        if last_decode_error is not None:
+            raise last_decode_error
+        list_file_lines = []
+
+    for line_number, line_text in enumerate(list_file_lines, start=1):
+        stripped_line_text = line_text.rstrip("\r\n").lstrip("\ufeff")
+        if stripped_line_text.strip() == "":
+            continue
+
+        list_columns = [column_text.strip() for column_text in stripped_line_text.split("\t")]
+        if len(list_columns) != 2:
+            list_error_lines.append(
+                f"google_calendar_color.txt line={line_number}, reason=row must have 2 tab-separated columns"
+            )
+            continue
+
+        vehicle_type, color_name = list_columns
+        if vehicle_type == "" or color_name == "":
+            list_error_lines.append(
+                f"google_calendar_color.txt line={line_number}, reason=vehicle type/color name is empty"
+            )
+            continue
+
+        color_id = GOOGLE_CALENDAR_COLOR_NAME_TO_ID.get(color_name)
+        if color_id is None:
+            list_error_lines.append(
+                "google_calendar_color.txt "
+                f"line={line_number}, reason=unsupported color name, "
+                f"vehicle_type={vehicle_type}, color_name={color_name}"
+            )
+            continue
+
+        dict_vehicle_type_to_color_id[vehicle_type] = color_id
+
+    return dict_vehicle_type_to_color_id, list_error_lines
+
+
+def get_step0010_vehicle_type(title_text: str, list_vehicle_types: list[str]) -> str | None:
+    """Return the second comma-space separated field when it matches a configured vehicle type."""
+    list_title_fields = [field_text.strip() for field_text in title_text.split(", ")]
+    if len(list_title_fields) < 2:
+        return None
+
+    vehicle_type = list_title_fields[1]
+    if vehicle_type in list_vehicle_types:
+        return vehicle_type
+
+    return None
+
+
+def get_step0010_calendar_color_id(title_text: str, dict_vehicle_type_to_color_id: dict[str, str]) -> str | None:
+    """Return the configured Google Calendar colorId for a step0010 title text."""
+    vehicle_type = get_step0010_vehicle_type(title_text, list(dict_vehicle_type_to_color_id.keys()))
+    if vehicle_type is None:
+        return None
+
+    return dict_vehicle_type_to_color_id[vehicle_type]
+
+
+def build_step0010_calendar_event_body(
+    title_text: str,
+    work_date: datetime,
+    color_id: str | None = None,
+) -> dict[str, object]:
+    """Build a Google Calendar all-day event body from step0010 row text and work date."""
+    end_date = work_date + timedelta(days=1)
+    event_body: dict[str, object] = {
+        "summary": title_text,
+        "location": "",
+        "description": "",
+        "start": {"date": work_date.strftime("%Y-%m-%d"), "timeZone": TIME_ZONE},
+        "end": {"date": end_date.strftime("%Y-%m-%d"), "timeZone": TIME_ZONE},
+    }
+    if color_id is not None:
+        event_body["colorId"] = color_id
+
+    return event_body
+
+
+def write_step0010_registration_error_file(step0010_tsv_file_path: Path, list_error_lines: list[str]) -> Path:
+    """Write a step0010 Google Calendar registration error file."""
+    step0010_error_file_path = step0010_tsv_file_path.with_name(f"{step0010_tsv_file_path.stem}_error.txt")
+    step0010_error_file_path.write_text("\n".join(list_error_lines).rstrip() + "\n", encoding="utf-8-sig")
+    return step0010_error_file_path
+
+
+def get_step0010_row_title_text(step0010_tsv_row: list[str]) -> str:
+    """Return title text for a step0010 TSV row."""
+    return "\t".join(step0010_tsv_row).strip()
+
+
+def create_google_calendar_events_from_step0010_tsv(
+    step0010_tsv_file_path: Path,
+    google_calendar_service=None,
+    calendar_id: str | None = None,
+    dict_vehicle_type_to_color_id: dict[str, str] | None = None,
+    list_color_error_lines: list[str] | None = None,
+) -> tuple[int, int]:
+    """Register Google Calendar all-day events from one step0010 TSV file."""
+    list_error_lines: list[str] = []
+    if list_color_error_lines is not None:
+        list_error_lines.extend(list_color_error_lines)
+
+    try:
+        work_date = parse_step0010_daily_date(step0010_tsv_file_path)
+    except Exception as exception:
+        write_step0010_registration_error_file(step0010_tsv_file_path, [f"line=0, reason={exception}"])
+        return 0, 1
+
+    step0010_tsv_rows = read_tsv_rows(step0010_tsv_file_path)
+    if len(step0010_tsv_rows) == 0:
+        return 0, 0
+
+    if google_calendar_service is None:
+        from googleapiclient.discovery import build
+
+        google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+
+    if calendar_id is None:
+        calendar_id = get_google_calendar_id()
+
+    if dict_vehicle_type_to_color_id is None:
+        dict_vehicle_type_to_color_id, loaded_color_error_lines = read_google_calendar_color_settings()
+        list_error_lines.extend(loaded_color_error_lines)
+
+    success_count = 0
+    skip_count = 0
+
+    for line_number, step0010_tsv_row in enumerate(step0010_tsv_rows[1:], start=2):
+        title_text = get_step0010_row_title_text(step0010_tsv_row)
+        if title_text == "":
+            skip_count += 1
+            list_error_lines.append(
+                f"line={line_number}, reason=title text is empty, work_date={work_date.strftime('%Y-%m-%d')}"
+            )
+            continue
+
+        try:
+            color_id = get_step0010_calendar_color_id(title_text, dict_vehicle_type_to_color_id)
+            event_body = build_step0010_calendar_event_body(title_text, work_date, color_id)
+            created_event = (
+                google_calendar_service.events()
+                .insert(calendarId=calendar_id, body=event_body)
+                .execute()
+            )
+            print(created_event.get("htmlLink", ""))
+            success_count += 1
+        except Exception as exception:
+            skip_count += 1
+            list_error_lines.append(
+                f"line={line_number}, reason={exception}, "
+                f"work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
+            )
+
+    if len(list_error_lines) > 0:
+        write_step0010_registration_error_file(step0010_tsv_file_path, list_error_lines)
+
+    return success_count, skip_count
+
+
+def create_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
+    """Register Google Calendar events from provided step0010 TSV files."""
+    from googleapiclient.discovery import build
+
+    google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+    calendar_id = get_google_calendar_id()
+    dict_vehicle_type_to_color_id, list_color_error_lines = read_google_calendar_color_settings()
+    total_success_count = 0
+    total_skip_count = 0
+
+    for step0010_tsv_file_path in list_step0010_tsv_file_paths:
+        if step0010_tsv_file_path.suffix.lower() != ".tsv" or "_step0010_" not in step0010_tsv_file_path.name:
+            continue
+
+        success_count, skip_count = create_google_calendar_events_from_step0010_tsv(
+            step0010_tsv_file_path,
+            google_calendar_service,
+            calendar_id,
+            dict_vehicle_type_to_color_id,
+            list_color_error_lines,
+        )
+        total_success_count += success_count
+        total_skip_count += skip_count
+
+    return total_success_count, total_skip_count
+
+
+def build_step0010_calendar_record_key(work_date: datetime, title_text: str, occurrence_index: int) -> str:
+    """Build a stable key for one step0010 calendar row occurrence."""
+    return f"{work_date.strftime('%Y-%m-%d')}\t{occurrence_index}\t{title_text}"
+
+
+def load_step0010_registered_event_records(registered_events_file_path: Path) -> list[dict[str, str]]:
+    """Load previously registered step0010 Google Calendar event records."""
+    if not registered_events_file_path.exists():
+        return []
+
+    loaded_json = json.loads(registered_events_file_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(loaded_json, list):
+        raise RuntimeError(f"登録済み予定管理ファイルの形式が不正です: {registered_events_file_path}")
+
+    list_records: list[dict[str, str]] = []
+    for record_index, loaded_record in enumerate(loaded_json, start=1):
+        if not isinstance(loaded_record, dict):
+            raise RuntimeError(f"登録済み予定管理ファイルの{record_index}件目が不正です: {registered_events_file_path}")
+
+        record_key = str(loaded_record.get("key", "")).strip()
+        work_date_text = str(loaded_record.get("date", "")).strip()
+        summary_text = str(loaded_record.get("summary", "")).strip()
+        event_id = str(loaded_record.get("event_id", "")).strip()
+        color_id = str(loaded_record.get("colorId", "")).strip()
+        if record_key == "" or work_date_text == "" or summary_text == "":
+            raise RuntimeError(f"登録済み予定管理ファイルの{record_index}件目に必須項目がありません: {registered_events_file_path}")
+
+        record = {
+            "key": record_key,
+            "date": work_date_text,
+            "summary": summary_text,
+            "event_id": event_id,
+        }
+        if color_id != "":
+            record["colorId"] = color_id
+        list_records.append(record)
+
+    return list_records
+
+
+def write_step0010_registered_event_records(
+    registered_events_file_path: Path,
+    list_registered_event_records: list[dict[str, str]],
+) -> Path:
+    """Write step0010 Google Calendar event records for future sync runs."""
+    registered_events_file_path.write_text(
+        json.dumps(list_registered_event_records, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return registered_events_file_path
+
+
+def build_current_step0010_calendar_event_records(
+    list_step0010_tsv_file_paths: list[Path],
+    dict_vehicle_type_to_color_id: dict[str, str],
+) -> tuple[list[dict[str, str]], dict[Path, list[str]]]:
+    """Build desired step0010 calendar event records from current step0010 TSV files."""
+    list_current_records: list[dict[str, str]] = []
+    dict_error_lines_by_path: dict[Path, list[str]] = {}
+    dict_occurrence_count_by_date_and_title: dict[tuple[str, str], int] = {}
+
+    for step0010_tsv_file_path in sorted(list_step0010_tsv_file_paths, key=lambda file_path: file_path.name):
+        if step0010_tsv_file_path.suffix.lower() != ".tsv" or "_step0010_" not in step0010_tsv_file_path.name:
+            continue
+
+        list_error_lines: list[str] = []
+        try:
+            work_date = parse_step0010_daily_date(step0010_tsv_file_path)
+        except Exception as exception:
+            dict_error_lines_by_path[step0010_tsv_file_path] = [f"line=0, reason={exception}"]
+            continue
+
+        step0010_tsv_rows = read_tsv_rows(step0010_tsv_file_path)
+        for line_number, step0010_tsv_row in enumerate(step0010_tsv_rows[1:], start=2):
+            title_text = get_step0010_row_title_text(step0010_tsv_row)
+            if title_text == "":
+                list_error_lines.append(
+                    f"line={line_number}, reason=title text is empty, work_date={work_date.strftime('%Y-%m-%d')}"
+                )
+                continue
+
+            date_text = work_date.strftime("%Y-%m-%d")
+            occurrence_key = (date_text, title_text)
+            occurrence_index = dict_occurrence_count_by_date_and_title.get(occurrence_key, 0) + 1
+            dict_occurrence_count_by_date_and_title[occurrence_key] = occurrence_index
+            color_id = get_step0010_calendar_color_id(title_text, dict_vehicle_type_to_color_id)
+            record = {
+                "key": build_step0010_calendar_record_key(work_date, title_text, occurrence_index),
+                "date": date_text,
+                "summary": title_text,
+                "event_id": "",
+            }
+            if color_id is not None:
+                record["colorId"] = color_id
+            list_current_records.append(record)
+
+        if len(list_error_lines) > 0:
+            dict_error_lines_by_path[step0010_tsv_file_path] = list_error_lines
+
+    return list_current_records, dict_error_lines_by_path
+
+
+def find_google_calendar_event_id_by_summary_date(
+    google_calendar_service,
+    calendar_id: str,
+    work_date_text: str,
+    summary_text: str,
+) -> str | None:
+    """Find a Google Calendar event id by date and summary."""
+    work_date = datetime.strptime(work_date_text, "%Y-%m-%d")
+    time_min = work_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "+09:00"
+    time_max = (
+        (work_date + timedelta(days=1))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+        + "+09:00"
+    )
+    response = (
+        google_calendar_service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+        )
+        .execute()
+    )
+    for event_item in response.get("items", []):
+        if str(event_item.get("summary", "")).strip() != summary_text:
+            continue
+
+        event_id = str(event_item.get("id", "")).strip()
+        if event_id != "":
+            return event_id
+
+    return None
+
+
+def create_google_calendar_event_from_step0010_record(
+    google_calendar_service,
+    calendar_id: str,
+    record: dict[str, str],
+) -> dict[str, str]:
+    """Create one Google Calendar event from a step0010 record and return an updated record."""
+    work_date = datetime.strptime(record["date"], "%Y-%m-%d")
+    color_id = record.get("colorId")
+    event_body = build_step0010_calendar_event_body(record["summary"], work_date, color_id if color_id != "" else None)
+    created_event = google_calendar_service.events().insert(calendarId=calendar_id, body=event_body).execute()
+    print(created_event.get("htmlLink", ""))
+
+    updated_record = dict(record)
+    updated_record["event_id"] = str(created_event.get("id", "")).strip()
+    return updated_record
+
+
+def delete_google_calendar_event_from_step0010_record(
+    google_calendar_service,
+    calendar_id: str,
+    record: dict[str, str],
+) -> bool:
+    """Delete one Google Calendar event from a step0010 registered record."""
+    event_id = str(record.get("event_id", "")).strip()
+    if event_id == "":
+        event_id = find_google_calendar_event_id_by_summary_date(
+            google_calendar_service,
+            calendar_id,
+            record["date"],
+            record["summary"],
+        ) or ""
+
+    if event_id == "":
+        return False
+
+    google_calendar_service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+    return True
+
+
+def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
+    """Sync Google Calendar events by adding/removing differences from step0010 TSV files."""
+    from googleapiclient.discovery import build
+
+    list_step0010_daily_tsv_file_paths = [
+        step0010_tsv_file_path
+        for step0010_tsv_file_path in list_step0010_tsv_file_paths
+        if step0010_tsv_file_path.suffix.lower() == ".tsv" and "_step0010_" in step0010_tsv_file_path.name
+    ]
+    if len(list_step0010_daily_tsv_file_paths) == 0:
+        return 0, 0
+
+    google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+    calendar_id = get_google_calendar_id()
+    dict_vehicle_type_to_color_id, list_color_error_lines = read_google_calendar_color_settings()
+    list_current_records, dict_error_lines_by_path = build_current_step0010_calendar_event_records(
+        list_step0010_daily_tsv_file_paths,
+        dict_vehicle_type_to_color_id,
+    )
+
+    if len(list_color_error_lines) > 0:
+        first_step0010_tsv_file_path = sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+        dict_error_lines_by_path.setdefault(first_step0010_tsv_file_path, []).extend(list_color_error_lines)
+
+    for step0010_tsv_file_path, list_error_lines in dict_error_lines_by_path.items():
+        write_step0010_registration_error_file(step0010_tsv_file_path, list_error_lines)
+
+    registered_events_file_path = build_step0010_registered_events_file_path(
+        sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    )
+    list_existing_records = load_step0010_registered_event_records(registered_events_file_path)
+    dict_existing_records_by_key = {record["key"]: record for record in list_existing_records}
+    dict_current_records_by_key = {record["key"]: record for record in list_current_records}
+    processed_count = 0
+    skipped_count = 0
+    list_next_registered_records: list[dict[str, str]] = []
+    list_sync_error_lines: list[str] = []
+
+    for record in list_current_records:
+        existing_record = dict_existing_records_by_key.get(record["key"])
+        if existing_record is not None:
+            preserved_record = dict(record)
+            preserved_record["event_id"] = str(existing_record.get("event_id", "")).strip()
+            list_next_registered_records.append(preserved_record)
+            continue
+
+        try:
+            list_next_registered_records.append(
+                create_google_calendar_event_from_step0010_record(google_calendar_service, calendar_id, record)
+            )
+            processed_count += 1
+        except Exception as exception:
+            skipped_count += 1
+            list_sync_error_lines.append(
+                f"sync=create, reason={exception}, date={record.get('date', '')}, summary={record.get('summary', '')}"
+            )
+
+    for record in list_existing_records:
+        if record["key"] in dict_current_records_by_key:
+            continue
+
+        try:
+            if delete_google_calendar_event_from_step0010_record(google_calendar_service, calendar_id, record):
+                processed_count += 1
+            else:
+                skipped_count += 1
+        except Exception as exception:
+            skipped_count += 1
+            list_sync_error_lines.append(
+                f"sync=delete, reason={exception}, date={record.get('date', '')}, summary={record.get('summary', '')}"
+            )
+
+    if len(list_sync_error_lines) > 0:
+        first_step0010_tsv_file_path = sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+        list_combined_error_lines = dict_error_lines_by_path.get(first_step0010_tsv_file_path, []) + list_sync_error_lines
+        write_step0010_registration_error_file(first_step0010_tsv_file_path, list_combined_error_lines)
+
+    write_step0010_registered_event_records(registered_events_file_path, list_next_registered_records)
+    print(registered_events_file_path)
+    return processed_count, skipped_count
+
+
+def delete_google_calendar_events_from_step0010_tsv(
+    step0010_tsv_file_path: Path,
+    google_calendar_service=None,
+    calendar_id: str | None = None,
+) -> tuple[int, int]:
+    """Delete Google Calendar events matching one step0010 TSV file by date and summary."""
+    list_error_lines: list[str] = []
+    try:
+        work_date = parse_step0010_daily_date(step0010_tsv_file_path)
+    except Exception as exception:
+        write_step0010_registration_error_file(step0010_tsv_file_path, [f"line=0, reason={exception}"])
+        return 0, 1
+
+    step0010_tsv_rows = read_tsv_rows(step0010_tsv_file_path)
+    if len(step0010_tsv_rows) == 0:
+        return 0, 0
+
+    if google_calendar_service is None:
+        from googleapiclient.discovery import build
+
+        google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+
+    if calendar_id is None:
+        calendar_id = get_google_calendar_id()
+
+    deleted_count = 0
+    skip_count = 0
+    time_min = work_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "+09:00"
+    time_max = (
+        (work_date + timedelta(days=1))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+        + "+09:00"
+    )
+
+    for line_number, step0010_tsv_row in enumerate(step0010_tsv_rows[1:], start=2):
+        title_text = get_step0010_row_title_text(step0010_tsv_row)
+        if title_text == "":
+            skip_count += 1
+            list_error_lines.append(
+                f"line={line_number}, reason=title text is empty, work_date={work_date.strftime('%Y-%m-%d')}"
+            )
+            continue
+
+        try:
+            response = (
+                google_calendar_service.events()
+                .list(
+                    calendarId=calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    singleEvents=True,
+                )
+                .execute()
+            )
+            matched_count = 0
+            for event_item in response.get("items", []):
+                if str(event_item.get("summary", "")).strip() != title_text:
+                    continue
+
+                event_id = str(event_item.get("id", ""))
+                if event_id == "":
+                    continue
+
+                google_calendar_service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+                deleted_count += 1
+                matched_count += 1
+
+            if matched_count == 0:
+                skip_count += 1
+                list_error_lines.append(
+                    f"line={line_number}, reason=matching event not found, "
+                    f"work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
+                )
+        except Exception as exception:
+            skip_count += 1
+            list_error_lines.append(
+                f"line={line_number}, reason={exception}, "
+                f"work_date={work_date.strftime('%Y-%m-%d')}, title_text={title_text}"
+            )
+
+    if len(list_error_lines) > 0:
+        write_step0010_registration_error_file(step0010_tsv_file_path, list_error_lines)
+
+    return deleted_count, skip_count
+
+
+def delete_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
+    """Delete Google Calendar events from provided step0010 TSV files."""
+    from googleapiclient.discovery import build
+
+    google_calendar_service = build("calendar", "v3", credentials=get_google_credentials())
+    calendar_id = get_google_calendar_id()
+    total_deleted_count = 0
+    total_skip_count = 0
+
+    for step0010_tsv_file_path in list_step0010_tsv_file_paths:
+        if step0010_tsv_file_path.suffix.lower() != ".tsv" or "_step0010_" not in step0010_tsv_file_path.name:
+            continue
+
+        deleted_count, skip_count = delete_google_calendar_events_from_step0010_tsv(
+            step0010_tsv_file_path,
+            google_calendar_service,
+            calendar_id,
+        )
+        total_deleted_count += deleted_count
+        total_skip_count += skip_count
+
+    return total_deleted_count, total_skip_count
+
+
+def parse_step0003_daily_date(step0003_tsv_file_path: Path) -> datetime:
+    """Parse a date from a step0003 daily TSV file name."""
+    match = re.fullmatch(r"(.+_step0003_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0003_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0003日別TSVファイル名の日付を解析できません: {step0003_tsv_file_path}")
+
+    return datetime(int(match.group(2)), int(match.group(3)), int(match.group(4)))
+
+
+def get_step0003_daily_file_prefix(step0003_tsv_file_path: Path) -> str:
+    """Return the file-name prefix before the date in a step0003 daily TSV path."""
+    match = re.fullmatch(r"(.+_step0003_)([0-9]{4})年([0-9]{2})月([0-9]{2})日\.tsv", step0003_tsv_file_path.name)
+    if match is None:
+        raise RuntimeError(f"step0003日別TSVファイル名を解析できません: {step0003_tsv_file_path}")
+
+    return match.group(1)
+
+
+def build_step0003_daily_tsv_file_path(sample_step0003_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Build an expected step0003 daily TSV path for a target date."""
+    step0003_file_prefix = get_step0003_daily_file_prefix(sample_step0003_tsv_file_path)
+    step0003_file_name = f"{step0003_file_prefix}{target_date.year}年{target_date.month:02d}月{target_date.day:02d}日.tsv"
+    return sample_step0003_tsv_file_path.with_name(step0003_file_name)
+
+
+def build_monthly_step0003_tsv_file_path(sample_step0003_tsv_file_path: Path) -> Path:
+    """Build a monthly step0003 TSV path from a daily step0003 TSV path."""
+    target_date = parse_step0003_daily_date(sample_step0003_tsv_file_path)
+    step0003_file_prefix = get_step0003_daily_file_prefix(sample_step0003_tsv_file_path)
+    step0003_file_name = f"{step0003_file_prefix}{target_date.year}年{target_date.month:02d}月.tsv"
+    return sample_step0003_tsv_file_path.with_name(step0003_file_name)
+
+
+def format_monthly_step0003_header_date(target_date: datetime) -> str:
+    """Format a date header for the monthly step0003 TSV."""
+    return f"{target_date.year}/{target_date.month}/{target_date.day}"
+
+
+def write_missing_step0003_error_file(step0003_tsv_file_path: Path, target_date: datetime) -> Path:
+    """Write an error file for a missing step0003 daily TSV file."""
+    step0003_error_file_path = step0003_tsv_file_path.with_name(f"{step0003_tsv_file_path.name}_error.txt")
+    list_output_lines = [
+        f"対象ファイル: {step0003_tsv_file_path.name}",
+        "",
+        "[日別step0003ファイルなし]",
+        f"日付: {target_date.year}年{target_date.month:02d}月{target_date.day:02d}日",
+        "内容: 月間step0003作成時に、対象日のstep0003 TSVファイルが見つかりませんでした。",
+    ]
+    step0003_error_file_path.write_text("\n".join(list_output_lines).rstrip() + "\n", encoding="utf-8-sig")
+    return step0003_error_file_path
+
+
+def get_monthly_step0003_target_dates(sample_step0003_tsv_file_path: Path) -> list[datetime]:
+    """Return all dates in the month of a sample step0003 daily TSV path."""
+    target_date = parse_step0003_daily_date(sample_step0003_tsv_file_path)
+    i_last_day = get_last_day_of_month(target_date)
+    return [datetime(target_date.year, target_date.month, i_day) for i_day in range(1, i_last_day + 1)]
+
+
+def build_monthly_step0003_tsv_rows(
+    sample_step0003_tsv_file_path: Path,
+    dict_daily_rows_by_date: dict[datetime, list[list[str]]],
+    first_column_header: str,
+) -> list[list[str]]:
+    """Build monthly step0003 TSV rows from daily step0003 rows."""
+    list_target_dates = get_monthly_step0003_target_dates(sample_step0003_tsv_file_path)
+    i_max_row_count = max((len(dict_daily_rows_by_date.get(target_date, [])) for target_date in list_target_dates), default=0)
+    monthly_header_row = [first_column_header] + [format_monthly_step0003_header_date(target_date) for target_date in list_target_dates]
+    monthly_step0003_tsv_rows: list[list[str]] = [monthly_header_row]
+
+    for i_row_index in range(i_max_row_count):
+        monthly_row = [str(i_row_index + 1)]
+
+        for target_date in list_target_dates:
+            list_daily_rows = dict_daily_rows_by_date.get(target_date, [])
+            if i_row_index < len(list_daily_rows):
+                monthly_row.append(get_cell_value(list_daily_rows[i_row_index], 1))
+            else:
+                monthly_row.append("")
+
+        monthly_step0003_tsv_rows.append(monthly_row)
+
+    return monthly_step0003_tsv_rows
+
+
+def write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create a monthly step0003 TSV file from daily step0003 TSV files."""
+    list_step0003_daily_tsv_file_paths = [
+        step0003_tsv_file_path
+        for step0003_tsv_file_path in list_step0003_tsv_file_paths
+        if step0003_tsv_file_path.suffix.lower() == ".tsv" and "_step0003_" in step0003_tsv_file_path.name
+    ]
+    if len(list_step0003_daily_tsv_file_paths) == 0:
+        return []
+
+    sample_step0003_tsv_file_path = sorted(list_step0003_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    dict_step0003_daily_tsv_paths_by_date = {
+        parse_step0003_daily_date(step0003_tsv_file_path): step0003_tsv_file_path
+        for step0003_tsv_file_path in list_step0003_daily_tsv_file_paths
+    }
+    sample_step0003_tsv_rows = read_tsv_rows(sample_step0003_tsv_file_path)
+    first_column_header = get_cell_value(sample_step0003_tsv_rows[0], 0) if len(sample_step0003_tsv_rows) > 0 else ""
+    dict_daily_rows_by_date: dict[datetime, list[list[str]]] = {}
+    list_created_file_paths: list[Path] = []
+
+    for target_date in get_monthly_step0003_target_dates(sample_step0003_tsv_file_path):
+        step0003_tsv_file_path = dict_step0003_daily_tsv_paths_by_date.get(target_date)
+        if step0003_tsv_file_path is None:
+            missing_step0003_tsv_file_path = build_step0003_daily_tsv_file_path(sample_step0003_tsv_file_path, target_date)
+            list_created_file_paths.append(write_missing_step0003_error_file(missing_step0003_tsv_file_path, target_date))
+            dict_daily_rows_by_date[target_date] = []
+            continue
+
+        step0003_tsv_rows = read_tsv_rows(step0003_tsv_file_path)
+        dict_daily_rows_by_date[target_date] = step0003_tsv_rows[1:]
+
+    monthly_step0003_tsv_file_path = build_monthly_step0003_tsv_file_path(sample_step0003_tsv_file_path)
+    monthly_step0003_tsv_rows = build_monthly_step0003_tsv_rows(
+        sample_step0003_tsv_file_path,
+        dict_daily_rows_by_date,
+        first_column_header,
+    )
+    write_tsv_rows(monthly_step0003_tsv_file_path, monthly_step0003_tsv_rows)
+    list_created_file_paths.insert(0, monthly_step0003_tsv_file_path)
+    return list_created_file_paths
 
 
 def write_missing_step0002_error_file(step0002_tsv_file_path: Path, target_date: datetime) -> Path:
@@ -755,33 +1931,79 @@ def write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths: list[Path]) ->
 
 
 def main() -> int:
-    """Read an Excel file path from the command line and create a same-named TSV."""
-    if len(sys.argv) != 2:
+    """Read an Excel file path from the command line and create DestinationNotes outputs."""
+    argument_parser = argparse.ArgumentParser(add_help=False)
+    argument_parser.add_argument("--mode", choices=["sync", "create", "delete"], default="sync")
+    argument_parser.add_argument("excel_file_paths", nargs="*")
+    parsed_arguments = argument_parser.parse_args(sys.argv[1:])
+
+    if len(parsed_arguments.excel_file_paths) != 1:
         print("Excelファイル名を1つ指定してください。", file=sys.stderr)
         return 1
 
-    excel_file_path = Path(sys.argv[1]).resolve()
+    excel_file_path = Path(parsed_arguments.excel_file_paths[0]).resolve()
     error_message = validate_excel_file_path(excel_file_path)
     if error_message is not None:
         print(error_message, file=sys.stderr)
         return 1
 
     try:
+        backup_excel_file_path = backup_excel_file(excel_file_path)
         tsv_file_path = write_excel_values_to_tsv(excel_file_path)
         list_daily_tsv_file_paths = write_step0001_daily_tsv_files(tsv_file_path)
+        list_monthly_step0001_file_paths = write_monthly_step0001_tsv_file(list_daily_tsv_file_paths)
         list_step0002_tsv_file_paths = write_step0002_daily_tsv_files(list_daily_tsv_file_paths)
-        list_monthly_step0002_file_paths = write_monthly_step0002_tsv_file(list_step0002_tsv_file_paths)
+        list_step0003_tsv_file_paths = write_step0003_daily_tsv_files(list_step0002_tsv_file_paths)
+        list_monthly_step0003_file_paths = write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths)
+        list_step0004_tsv_file_paths = write_step0004_daily_tsv_files(list_step0003_tsv_file_paths)
+        list_step0010_tsv_file_paths = write_step0010_daily_tsv_files(list_step0004_tsv_file_paths)
+        list_monthly_step0010_file_paths = write_monthly_step0010_tsv_file(list_step0010_tsv_file_paths)
+        if parsed_arguments.mode == "delete":
+            google_processed_count, google_skipped_count = delete_google_calendar_events_from_step0010_tsv_files(
+                list_step0010_tsv_file_paths
+            )
+        elif parsed_arguments.mode == "create":
+            google_processed_count, google_skipped_count = create_google_calendar_events_from_step0010_tsv_files(
+                list_step0010_tsv_file_paths
+            )
+        else:
+            google_processed_count, google_skipped_count = sync_google_calendar_events_from_step0010_tsv_files(
+                list_step0010_tsv_file_paths
+            )
     except Exception as exception:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
         return 1
 
+    print(backup_excel_file_path)
     print(tsv_file_path)
     for daily_tsv_file_path in list_daily_tsv_file_paths:
         print(daily_tsv_file_path)
+    for monthly_step0001_file_path in list_monthly_step0001_file_paths:
+        print(monthly_step0001_file_path)
     for step0002_tsv_file_path in list_step0002_tsv_file_paths:
         print(step0002_tsv_file_path)
-    for monthly_step0002_file_path in list_monthly_step0002_file_paths:
-        print(monthly_step0002_file_path)
+    for step0003_tsv_file_path in list_step0003_tsv_file_paths:
+        print(step0003_tsv_file_path)
+    for monthly_step0003_file_path in list_monthly_step0003_file_paths:
+        print(monthly_step0003_file_path)
+    for step0004_tsv_file_path in list_step0004_tsv_file_paths:
+        print(step0004_tsv_file_path)
+    for step0010_tsv_file_path in list_step0010_tsv_file_paths:
+        print(step0010_tsv_file_path)
+    for monthly_step0010_file_path in list_monthly_step0010_file_paths:
+        print(monthly_step0010_file_path)
+    if parsed_arguments.mode == "delete":
+        print(
+            f"Google Calendar events deleted from step0010: {google_processed_count}, skipped: {google_skipped_count}"
+        )
+    elif parsed_arguments.mode == "create":
+        print(
+            f"Google Calendar events created from step0010: {google_processed_count}, skipped: {google_skipped_count}"
+        )
+    else:
+        print(
+            f"Google Calendar events synced from step0010: {google_processed_count}, skipped: {google_skipped_count}"
+        )
     return 0
 
 
