@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import re
+import shutil
 import sys
 import zipfile
 from xml.etree import ElementTree
@@ -26,6 +27,7 @@ CALENDAR_ID = "primary"
 GOOGLE_CALENDAR_ID_FILE = Path("google_calendar_id.txt")
 GOOGLE_CALENDAR_COLOR_FILE = Path("google_calendar_color.txt")
 GOOGLE_CALENDAR_COLOR_NAME_TO_ID = {"黄色": "5", "青": "9", "赤": "11"}
+EXCEL_BACKUP_DIRECTORY_NAME = "backup"
 
 
 BUILT_IN_DATE_FORMAT_IDS = {
@@ -75,6 +77,38 @@ def validate_excel_file_path(excel_file_path: Path) -> str | None:
         return f"Excelファイルではありません: {excel_file_path}"
 
     return None
+
+
+def build_excel_backup_file_path(excel_file_path: Path, backup_timestamp_text: str | None = None) -> Path:
+    """Build a non-overwriting backup path for the specified Excel file."""
+    if backup_timestamp_text is None:
+        backup_timestamp_text = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    backup_directory_path = excel_file_path.parent / EXCEL_BACKUP_DIRECTORY_NAME
+    backup_file_path = backup_directory_path / f"{backup_timestamp_text}_{excel_file_path.name}"
+    if not backup_file_path.exists():
+        return backup_file_path
+
+    for backup_index in range(1, 1000):
+        indexed_backup_file_path = (
+            backup_directory_path
+            / f"{backup_timestamp_text}_{excel_file_path.stem}_{backup_index:03d}{excel_file_path.suffix}"
+        )
+        if not indexed_backup_file_path.exists():
+            return indexed_backup_file_path
+
+    raise RuntimeError(f"Excelバックアップファイル名を決定できません: {backup_directory_path}")
+
+
+def backup_excel_file(excel_file_path: Path) -> Path:
+    """Copy the input Excel file into a sibling backup folder before processing."""
+    try:
+        backup_file_path = build_excel_backup_file_path(excel_file_path)
+        backup_file_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(excel_file_path, backup_file_path)
+        return backup_file_path
+    except Exception as exception:
+        raise RuntimeError(f"Excelバックアップに失敗しました。TSV作成・Googleカレンダー処理は実行していません。理由: {exception}") from exception
 
 
 def namespace_tag(namespace_uri: str, tag_name: str) -> str:
@@ -1914,6 +1948,7 @@ def main() -> int:
         return 1
 
     try:
+        backup_excel_file_path = backup_excel_file(excel_file_path)
         tsv_file_path = write_excel_values_to_tsv(excel_file_path)
         list_daily_tsv_file_paths = write_step0001_daily_tsv_files(tsv_file_path)
         list_monthly_step0001_file_paths = write_monthly_step0001_tsv_file(list_daily_tsv_file_paths)
@@ -1939,6 +1974,7 @@ def main() -> int:
         print(f"TSV作成に失敗しました: {exception}", file=sys.stderr)
         return 1
 
+    print(backup_excel_file_path)
     print(tsv_file_path)
     for daily_tsv_file_path in list_daily_tsv_file_paths:
         print(daily_tsv_file_path)

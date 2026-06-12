@@ -131,9 +131,9 @@ def run_cmd_script(h_window: int, obj_excel_file_path: Path, b_delete_mode: bool
 
     if obj_completed_process.returncode == 0:
         if b_delete_mode:
-            show_info_message_box(h_window, "カレンダーからの削除を完了しました。")
+            show_info_message_box(h_window, "カレンダーからの削除を完了しました。\nExcelバックアップも作成しました。")
         else:
-            show_info_message_box(h_window, "カレンダーへの登録・同期を完了しました。")
+            show_info_message_box(h_window, "カレンダーへの登録・同期を完了しました。\nExcelバックアップも作成しました。")
         return
 
     psz_error_text = obj_completed_process.stderr.strip()
