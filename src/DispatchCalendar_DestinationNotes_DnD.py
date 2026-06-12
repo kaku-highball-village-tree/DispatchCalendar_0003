@@ -108,7 +108,7 @@ def run_cmd_script(h_window: int, obj_excel_file_path: Path, b_delete_mode: bool
         show_error_message_box(h_window, f"Cmd script not found:\n{obj_cmd_script_path}")
         return
 
-    psz_mode = "delete" if b_delete_mode else "create"
+    psz_mode = "delete" if b_delete_mode else "sync"
     list_subprocess_arguments: list[str] = [
         sys.executable,
         str(obj_cmd_script_path),
@@ -133,7 +133,7 @@ def run_cmd_script(h_window: int, obj_excel_file_path: Path, b_delete_mode: bool
         if b_delete_mode:
             show_info_message_box(h_window, "カレンダーからの削除を完了しました。")
         else:
-            show_info_message_box(h_window, "カレンダーへの登録を完了しました。")
+            show_info_message_box(h_window, "カレンダーへの登録・同期を完了しました。")
         return
 
     psz_error_text = obj_completed_process.stderr.strip()
@@ -175,7 +175,7 @@ def ensure_mode_radio_buttons(h_window: int) -> None:
     g_h_mode_radio_create = win32gui.CreateWindowEx(
         0,
         "BUTTON",
-        "登録",
+        "登録・同期",
         win32con.WS_CHILD
         | win32con.WS_VISIBLE
         | win32con.WS_TABSTOP
@@ -212,7 +212,7 @@ def layout_mode_radio_buttons(i_client_width: int, i_client_height: int) -> None
     if g_h_mode_radio_create == 0 or g_h_mode_radio_delete == 0:
         return
 
-    i_radio_width = 80
+    i_radio_width = 110
     i_radio_height = 24
     i_margin = 15
     i_radio_gap = 8
@@ -321,7 +321,7 @@ def window_procedure(h_window: int, i_message: int, w_param: int, l_param: int) 
                 "配送先備考Excel(.xlsx/.xlsm)をこのウインドウへドラッグ＆ドロップしてください。\n"
                 "同じフォルダにTSVファイルを作成します。\n"
                 "エラー時は _error.txt を出力します。\n"
-                "右下で「登録 / 削除」を選択して実行してください。"
+                "右下で「登録・同期 / 削除」を選択して実行してください。"
             )
             win32gui.DrawText(
                 h_device_context,
