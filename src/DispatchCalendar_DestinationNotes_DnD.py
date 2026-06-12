@@ -22,6 +22,12 @@ WINDOW_TITLE: str = "DispatchCalendar DestinationNotes DnD"
 MESSAGE_BOX_TITLE: str = "DispatchCalendar DestinationNotes DnD"
 COMMAND_SCRIPT_NAME: str = "DispatchCalendar_DestinationNotes_Cmd.py"
 ALLOWED_EXCEL_EXTENSIONS: set[str] = {".xlsx", ".xlsm"}
+MODE_RADIO_CREATE_ID: int = 1001
+MODE_RADIO_DELETE_ID: int = 1002
+
+g_b_delete_mode: bool = False
+g_h_mode_radio_create: int = 0
+g_h_mode_radio_delete: int = 0
 
 
 def create_instruction_font() -> int:
@@ -62,6 +68,24 @@ def show_error_message_box(h_window: int, psz_message_text: str) -> None:
     )
 
 
+def show_info_message_box(h_window: int, psz_message_text: str) -> None:
+    """Show an information message box."""
+    win32api.MessageBox(
+        h_window,
+        psz_message_text,
+        MESSAGE_BOX_TITLE,
+        win32con.MB_ICONINFORMATION | win32con.MB_OK,
+    )
+
+
+def show_delete_confirmation_message_box(h_window: int) -> bool:
+    """Show delete confirmation and return True only when user selects OK."""
+    psz_message_text = "現在「削除」が選択されています。対象の予定をGoogleカレンダーから削除します。続行しますか？"
+    i_flags = win32con.MB_ICONWARNING | win32con.MB_OKCANCEL | win32con.MB_DEFBUTTON2
+    i_result = win32api.MessageBox(h_window, psz_message_text, MESSAGE_BOX_TITLE, i_flags)
+    return i_result == win32con.IDOK
+
+
 def get_cmd_script_path() -> Path:
     """Resolve CMD script path from this script directory."""
     obj_current_script_path: Path = Path(__file__).resolve()
@@ -77,31 +101,133 @@ def is_valid_excel_file_path(obj_file_path: Path) -> bool:
     return b_has_valid_extension and b_exists and b_is_file
 
 
-def run_cmd_script(h_window: int, obj_excel_file_path: Path) -> None:
+def run_cmd_script(h_window: int, obj_excel_file_path: Path, b_delete_mode: bool) -> None:
     """Run DestinationNotes CMD script with the dropped Excel file path."""
     obj_cmd_script_path: Path = get_cmd_script_path()
     if not obj_cmd_script_path.exists():
         show_error_message_box(h_window, f"Cmd script not found:\n{obj_cmd_script_path}")
         return
 
+    psz_mode = "delete" if b_delete_mode else "sync"
     list_subprocess_arguments: list[str] = [
         sys.executable,
         str(obj_cmd_script_path),
+        "--mode",
+        psz_mode,
         str(obj_excel_file_path),
     ]
 
     try:
-        obj_completed_process: subprocess.CompletedProcess[bytes] = subprocess.run(
+        obj_completed_process: subprocess.CompletedProcess[str] = subprocess.run(
             list_subprocess_arguments,
             cwd=str(obj_excel_file_path.parent),
+            capture_output=True,
+            text=True,
             check=False,
         )
     except Exception as obj_exception:  # noqa: BLE001
         show_error_message_box(h_window, f"Failed to start command script.\n{obj_exception}")
         return
 
-    if obj_completed_process.returncode != 0:
-        show_error_message_box(h_window, "処理に失敗しました。詳細はcmdを確認してください。")
+    if obj_completed_process.returncode == 0:
+        if b_delete_mode:
+            show_info_message_box(h_window, "カレンダーからの削除を完了しました。")
+        else:
+            show_info_message_box(h_window, "カレンダーへの登録・同期を完了しました。")
+        return
+
+    psz_error_text = obj_completed_process.stderr.strip()
+    if psz_error_text == "":
+        psz_error_text = obj_completed_process.stdout.strip()
+    if psz_error_text == "":
+        psz_error_text = "処理に失敗しました。詳細はcmdを確認してください。"
+
+    show_error_message_box(h_window, psz_error_text)
+
+
+def update_mode_radio_buttons() -> None:
+    """Update radio checked states from current mode."""
+    if g_h_mode_radio_create == 0 or g_h_mode_radio_delete == 0:
+        return
+
+    win32gui.SendMessage(
+        g_h_mode_radio_create,
+        win32con.BM_SETCHECK,
+        win32con.BST_UNCHECKED if g_b_delete_mode else win32con.BST_CHECKED,
+        0,
+    )
+    win32gui.SendMessage(
+        g_h_mode_radio_delete,
+        win32con.BM_SETCHECK,
+        win32con.BST_CHECKED if g_b_delete_mode else win32con.BST_UNCHECKED,
+        0,
+    )
+
+
+def ensure_mode_radio_buttons(h_window: int) -> None:
+    """Create mode radio buttons once and keep them visible."""
+    global g_h_mode_radio_create, g_h_mode_radio_delete
+
+    if g_h_mode_radio_create != 0 and g_h_mode_radio_delete != 0:
+        return
+
+    h_instance = win32api.GetModuleHandle(None)
+    g_h_mode_radio_create = win32gui.CreateWindowEx(
+        0,
+        "BUTTON",
+        "登録・同期",
+        win32con.WS_CHILD
+        | win32con.WS_VISIBLE
+        | win32con.WS_TABSTOP
+        | win32con.BS_AUTORADIOBUTTON
+        | win32con.WS_GROUP,
+        0,
+        0,
+        0,
+        0,
+        h_window,
+        MODE_RADIO_CREATE_ID,
+        h_instance,
+        None,
+    )
+    g_h_mode_radio_delete = win32gui.CreateWindowEx(
+        0,
+        "BUTTON",
+        "削除",
+        win32con.WS_CHILD | win32con.WS_VISIBLE | win32con.WS_TABSTOP | win32con.BS_AUTORADIOBUTTON,
+        0,
+        0,
+        0,
+        0,
+        h_window,
+        MODE_RADIO_DELETE_ID,
+        h_instance,
+        None,
+    )
+    update_mode_radio_buttons()
+
+
+def layout_mode_radio_buttons(i_client_width: int, i_client_height: int) -> None:
+    """Layout mode radio buttons at bottom-right."""
+    if g_h_mode_radio_create == 0 or g_h_mode_radio_delete == 0:
+        return
+
+    i_radio_width = 110
+    i_radio_height = 24
+    i_margin = 15
+    i_radio_gap = 8
+    i_group_width = i_radio_width * 2 + i_radio_gap
+    i_group_x = max(i_margin, i_client_width - i_group_width - i_margin)
+    i_group_y = max(i_margin, i_client_height - i_radio_height - i_margin)
+    win32gui.MoveWindow(g_h_mode_radio_create, i_group_x, i_group_y, i_radio_width, i_radio_height, True)
+    win32gui.MoveWindow(
+        g_h_mode_radio_delete,
+        i_group_x + i_radio_width + i_radio_gap,
+        i_group_y,
+        i_radio_width,
+        i_radio_height,
+        True,
+    )
 
 
 def on_drop_files(h_window: int, h_drop: int) -> None:
@@ -128,14 +254,43 @@ def on_drop_files(h_window: int, h_drop: int) -> None:
         show_error_message_box(h_window, "Excelファイルは1つだけドロップしてください。")
         return
 
-    run_cmd_script(h_window, list_excel_file_paths[0])
+    if g_b_delete_mode and not show_delete_confirmation_message_box(h_window):
+        return
+
+    run_cmd_script(h_window, list_excel_file_paths[0], g_b_delete_mode)
 
 
 def window_procedure(h_window: int, i_message: int, w_param: int, l_param: int) -> int:
     """Main window procedure."""
+    global g_b_delete_mode
+
     if i_message == win32con.WM_CREATE:
         win32api.DragAcceptFiles(h_window, True)
+        ensure_mode_radio_buttons(h_window)
+        obj_client_rect: tuple[int, int, int, int] = win32gui.GetClientRect(h_window)
+        layout_mode_radio_buttons(obj_client_rect[2], obj_client_rect[3])
         return 0
+
+    if i_message == win32con.WM_SHOWWINDOW:
+        ensure_mode_radio_buttons(h_window)
+        obj_client_rect = win32gui.GetClientRect(h_window)
+        layout_mode_radio_buttons(obj_client_rect[2], obj_client_rect[3])
+        return 0
+
+    if i_message == win32con.WM_SIZE:
+        layout_mode_radio_buttons(win32api.LOWORD(l_param), win32api.HIWORD(l_param))
+        return 0
+
+    if i_message == win32con.WM_COMMAND:
+        i_control_id = win32api.LOWORD(w_param)
+        if i_control_id == MODE_RADIO_CREATE_ID:
+            g_b_delete_mode = False
+            update_mode_radio_buttons()
+            return 0
+        if i_control_id == MODE_RADIO_DELETE_ID:
+            g_b_delete_mode = True
+            update_mode_radio_buttons()
+            return 0
 
     if i_message == win32con.WM_DROPFILES:
         on_drop_files(h_window, w_param)
@@ -164,7 +319,9 @@ def window_procedure(h_window: int, i_message: int, w_param: int, l_param: int) 
             i_draw_text_flags: int = win32con.DT_LEFT | win32con.DT_TOP | win32con.DT_WORDBREAK
             psz_instruction_text: str = (
                 "配送先備考Excel(.xlsx/.xlsm)をこのウインドウへドラッグ＆ドロップしてください。\n"
-                "ドロップされたExcelファイル名を表示します。"
+                "同じフォルダにTSVファイルを作成します。\n"
+                "エラー時は _error.txt を出力します。\n"
+                "右下で「登録・同期 / 削除」を選択して実行してください。"
             )
             win32gui.DrawText(
                 h_device_context,
