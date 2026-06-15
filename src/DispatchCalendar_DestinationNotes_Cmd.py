@@ -1439,6 +1439,107 @@ def build_current_step0010_calendar_event_records(
     return list_current_records, dict_error_lines_by_path
 
 
+def get_step0010_sync_month_range(list_step0010_tsv_file_paths: list[Path]) -> tuple[datetime, datetime]:
+    """Return the target month range for step0010 Google Calendar sync."""
+    sample_step0010_tsv_file_path = sorted(list_step0010_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    target_date = parse_step0010_daily_date(sample_step0010_tsv_file_path)
+    month_start_date = datetime(target_date.year, target_date.month, 1)
+    if target_date.month == 12:
+        next_month_start_date = datetime(target_date.year + 1, 1, 1)
+    else:
+        next_month_start_date = datetime(target_date.year, target_date.month + 1, 1)
+
+    return month_start_date, next_month_start_date
+
+
+def get_google_calendar_event_work_date_text(event_item: dict[str, object]) -> str:
+    """Return a YYYY-MM-DD work date string from a Google Calendar event item."""
+    start_value = event_item.get("start", {})
+    if not isinstance(start_value, dict):
+        return ""
+
+    start_date = str(start_value.get("date", "")).strip()
+    if start_date != "":
+        return start_date
+
+    start_date_time = str(start_value.get("dateTime", "")).strip()
+    if len(start_date_time) >= 10:
+        return start_date_time[:10]
+
+    return ""
+
+
+def list_google_calendar_events_for_step0010_month(
+    google_calendar_service,
+    calendar_id: str,
+    month_start_date: datetime,
+    next_month_start_date: datetime,
+) -> list[dict[str, object]]:
+    """List current Google Calendar events in the step0010 target month."""
+    list_event_items: list[dict[str, object]] = []
+    page_token: str | None = None
+    time_min = month_start_date.isoformat() + "+09:00"
+    time_max = next_month_start_date.isoformat() + "+09:00"
+
+    while True:
+        request = google_calendar_service.events().list(
+            calendarId=calendar_id,
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            pageToken=page_token,
+        )
+        response = request.execute()
+        for event_item in response.get("items", []):
+            if isinstance(event_item, dict):
+                list_event_items.append(event_item)
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return list_event_items
+
+
+def build_google_calendar_event_records_from_event_items(
+    list_event_items: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    """Build comparable records from current Google Calendar event items."""
+    list_google_calendar_event_records: list[dict[str, str]] = []
+    dict_occurrence_count_by_date_and_title: dict[tuple[str, str], int] = {}
+
+    for event_item in sorted(
+        list_event_items,
+        key=lambda item: (
+            get_google_calendar_event_work_date_text(item),
+            str(item.get("summary", "")).strip(),
+            str(item.get("id", "")).strip(),
+        ),
+    ):
+        work_date_text = get_google_calendar_event_work_date_text(event_item)
+        summary_text = str(event_item.get("summary", "")).strip()
+        event_id = str(event_item.get("id", "")).strip()
+        if work_date_text == "" or summary_text == "" or event_id == "":
+            continue
+
+        occurrence_key = (work_date_text, summary_text)
+        occurrence_index = dict_occurrence_count_by_date_and_title.get(occurrence_key, 0) + 1
+        dict_occurrence_count_by_date_and_title[occurrence_key] = occurrence_index
+        work_date = datetime.strptime(work_date_text, "%Y-%m-%d")
+        record = {
+            "key": build_step0010_calendar_record_key(work_date, summary_text, occurrence_index),
+            "date": work_date_text,
+            "summary": summary_text,
+            "event_id": event_id,
+        }
+        color_id = str(event_item.get("colorId", "")).strip()
+        if color_id != "":
+            record["colorId"] = color_id
+        list_google_calendar_event_records.append(record)
+
+    return list_google_calendar_event_records
+
+
 def find_google_calendar_event_id_by_summary_date(
     google_calendar_service,
     calendar_id: str,
@@ -1515,7 +1616,7 @@ def delete_google_calendar_event_from_step0010_record(
 
 
 def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
-    """Sync Google Calendar events by adding/removing differences from step0010 TSV files."""
+    """Sync Google Calendar events by matching the current calendar month to step0010 TSV files."""
     from googleapiclient.discovery import build
 
     list_step0010_daily_tsv_file_paths = [
@@ -1541,11 +1642,15 @@ def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_p
     for step0010_tsv_file_path, list_error_lines in dict_error_lines_by_path.items():
         write_step0010_registration_error_file(step0010_tsv_file_path, list_error_lines)
 
-    registered_events_file_path = build_step0010_registered_events_file_path(
-        sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    month_start_date, next_month_start_date = get_step0010_sync_month_range(list_step0010_daily_tsv_file_paths)
+    list_google_calendar_event_items = list_google_calendar_events_for_step0010_month(
+        google_calendar_service,
+        calendar_id,
+        month_start_date,
+        next_month_start_date,
     )
-    list_existing_records = load_step0010_registered_event_records(registered_events_file_path)
-    dict_existing_records_by_key = {record["key"]: record for record in list_existing_records}
+    list_google_calendar_records = build_google_calendar_event_records_from_event_items(list_google_calendar_event_items)
+    dict_google_calendar_records_by_key = {record["key"]: record for record in list_google_calendar_records}
     dict_current_records_by_key = {record["key"]: record for record in list_current_records}
     processed_count = 0
     skipped_count = 0
@@ -1553,10 +1658,10 @@ def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_p
     list_sync_error_lines: list[str] = []
 
     for record in list_current_records:
-        existing_record = dict_existing_records_by_key.get(record["key"])
-        if existing_record is not None:
+        google_calendar_record = dict_google_calendar_records_by_key.get(record["key"])
+        if google_calendar_record is not None:
             preserved_record = dict(record)
-            preserved_record["event_id"] = str(existing_record.get("event_id", "")).strip()
+            preserved_record["event_id"] = str(google_calendar_record.get("event_id", "")).strip()
             list_next_registered_records.append(preserved_record)
             continue
 
@@ -1571,7 +1676,7 @@ def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_p
                 f"sync=create, reason={exception}, date={record.get('date', '')}, summary={record.get('summary', '')}"
             )
 
-    for record in list_existing_records:
+    for record in list_google_calendar_records:
         if record["key"] in dict_current_records_by_key:
             continue
 
@@ -1580,6 +1685,10 @@ def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_p
                 processed_count += 1
             else:
                 skipped_count += 1
+                list_sync_error_lines.append(
+                    f"sync=delete, reason=event id is empty, date={record.get('date', '')}, "
+                    f"summary={record.get('summary', '')}"
+                )
         except Exception as exception:
             skipped_count += 1
             list_sync_error_lines.append(
@@ -1591,6 +1700,9 @@ def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_p
         list_combined_error_lines = dict_error_lines_by_path.get(first_step0010_tsv_file_path, []) + list_sync_error_lines
         write_step0010_registration_error_file(first_step0010_tsv_file_path, list_combined_error_lines)
 
+    registered_events_file_path = build_step0010_registered_events_file_path(
+        sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    )
     write_step0010_registered_event_records(registered_events_file_path, list_next_registered_records)
     print(registered_events_file_path)
     return processed_count, skipped_count
