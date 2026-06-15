@@ -1209,6 +1209,15 @@ def get_step0010_calendar_color_id(title_text: str, dict_vehicle_type_to_color_i
     return dict_vehicle_type_to_color_id[vehicle_type]
 
 
+def get_step0010_title_vehicle_sort_index(title_text: str) -> int:
+    """Return the vehicle-type sort index for a step0010 title text."""
+    list_title_fields = [field_text.strip() for field_text in title_text.split(", ")]
+    if len(list_title_fields) < 2:
+        return OTHER_VEHICLE_TYPE_SORT_INDEX
+
+    return get_vehicle_type_sort_index(list_title_fields[1])
+
+
 def build_step0010_calendar_event_body(
     title_text: str,
     work_date: datetime,
@@ -1616,7 +1625,7 @@ def delete_google_calendar_event_from_step0010_record(
 
 
 def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_paths: list[Path]) -> tuple[int, int]:
-    """Sync Google Calendar events by matching the current calendar month to step0010 TSV files."""
+    """Sync Google Calendar events by recreating each day in vehicle-type order from step0010 TSV files."""
     from googleapiclient.discovery import build
 
     list_step0010_daily_tsv_file_paths = [
@@ -1650,50 +1659,69 @@ def sync_google_calendar_events_from_step0010_tsv_files(list_step0010_tsv_file_p
         next_month_start_date,
     )
     list_google_calendar_records = build_google_calendar_event_records_from_event_items(list_google_calendar_event_items)
-    dict_google_calendar_records_by_key = {record["key"]: record for record in list_google_calendar_records}
-    dict_current_records_by_key = {record["key"]: record for record in list_current_records}
+    dict_current_records_by_date: dict[str, list[dict[str, str]]] = {}
+    dict_google_calendar_records_by_date: dict[str, list[dict[str, str]]] = {}
+
+    for i_record_index, record in enumerate(list_current_records):
+        sortable_record = dict(record)
+        sortable_record["_source_index"] = str(i_record_index)
+        dict_current_records_by_date.setdefault(record["date"], []).append(sortable_record)
+
+    for record in list_google_calendar_records:
+        dict_google_calendar_records_by_date.setdefault(record["date"], []).append(record)
+
     processed_count = 0
     skipped_count = 0
     list_next_registered_records: list[dict[str, str]] = []
     list_sync_error_lines: list[str] = []
+    list_target_date_texts = sorted(set(dict_current_records_by_date.keys()) | set(dict_google_calendar_records_by_date.keys()))
 
-    for record in list_current_records:
-        google_calendar_record = dict_google_calendar_records_by_key.get(record["key"])
-        if google_calendar_record is not None:
-            preserved_record = dict(record)
-            preserved_record["event_id"] = str(google_calendar_record.get("event_id", "")).strip()
-            list_next_registered_records.append(preserved_record)
-            continue
-
-        try:
-            list_next_registered_records.append(
-                create_google_calendar_event_from_step0010_record(google_calendar_service, calendar_id, record)
-            )
-            processed_count += 1
-        except Exception as exception:
-            skipped_count += 1
-            list_sync_error_lines.append(
-                f"sync=create, reason={exception}, date={record.get('date', '')}, summary={record.get('summary', '')}"
-            )
-
-    for record in list_google_calendar_records:
-        if record["key"] in dict_current_records_by_key:
-            continue
-
-        try:
-            if delete_google_calendar_event_from_step0010_record(google_calendar_service, calendar_id, record):
-                processed_count += 1
-            else:
+    for work_date_text in list_target_date_texts:
+        list_daily_delete_error_lines: list[str] = []
+        for record in dict_google_calendar_records_by_date.get(work_date_text, []):
+            try:
+                if delete_google_calendar_event_from_step0010_record(google_calendar_service, calendar_id, record):
+                    processed_count += 1
+                else:
+                    skipped_count += 1
+                    list_daily_delete_error_lines.append(
+                        f"sync=delete, reason=event id is empty, date={record.get('date', '')}, "
+                        f"summary={record.get('summary', '')}"
+                    )
+            except Exception as exception:
                 skipped_count += 1
-                list_sync_error_lines.append(
-                    f"sync=delete, reason=event id is empty, date={record.get('date', '')}, "
+                list_daily_delete_error_lines.append(
+                    f"sync=delete, reason={exception}, date={record.get('date', '')}, "
                     f"summary={record.get('summary', '')}"
                 )
-        except Exception as exception:
-            skipped_count += 1
-            list_sync_error_lines.append(
-                f"sync=delete, reason={exception}, date={record.get('date', '')}, summary={record.get('summary', '')}"
-            )
+
+        if len(list_daily_delete_error_lines) > 0:
+            list_sync_error_lines.extend(list_daily_delete_error_lines)
+            continue
+
+        list_sorted_daily_current_records = sorted(
+            dict_current_records_by_date.get(work_date_text, []),
+            key=lambda record: (
+                get_step0010_title_vehicle_sort_index(record.get("summary", "")),
+                int(record.get("_source_index", "0")),
+            ),
+        )
+        for record in list_sorted_daily_current_records:
+            record_for_create = {key: value for key, value in record.items() if key != "_source_index"}
+            try:
+                created_record = create_google_calendar_event_from_step0010_record(
+                    google_calendar_service,
+                    calendar_id,
+                    record_for_create,
+                )
+                list_next_registered_records.append(created_record)
+                processed_count += 1
+            except Exception as exception:
+                skipped_count += 1
+                list_sync_error_lines.append(
+                    f"sync=create, reason={exception}, date={record_for_create.get('date', '')}, "
+                    f"summary={record_for_create.get('summary', '')}"
+                )
 
     if len(list_sync_error_lines) > 0:
         first_step0010_tsv_file_path = sorted(list_step0010_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
