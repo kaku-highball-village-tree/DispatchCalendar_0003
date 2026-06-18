@@ -682,6 +682,18 @@ def build_monthly_step0001_tsv_file_path(sample_step0001_tsv_file_path: Path) ->
     return sample_step0001_tsv_file_path.with_name(step0001_file_name)
 
 
+def build_step0001_daily_counts_tsv_file_path(sample_step0001_tsv_file_path: Path) -> Path:
+    """Build a step0001 daily-count TSV path from a daily step0001 TSV path."""
+    step0001_file_prefix = get_step0001_daily_file_prefix(sample_step0001_tsv_file_path)
+    return sample_step0001_tsv_file_path.with_name(f"{step0001_file_prefix}各日の件数.tsv")
+
+
+def build_step0001_daily_counts_vertical_tsv_file_path(sample_step0001_tsv_file_path: Path) -> Path:
+    """Build a transposed step0001 daily-count TSV path from a daily step0001 TSV path."""
+    step0001_file_prefix = get_step0001_daily_file_prefix(sample_step0001_tsv_file_path)
+    return sample_step0001_tsv_file_path.with_name(f"{step0001_file_prefix}各日の件数_vertical.tsv")
+
+
 def format_monthly_step0001_header_date(target_date: datetime) -> str:
     """Format a date header for the monthly step0001 TSV."""
     return f"{target_date.year}/{target_date.month}/{target_date.day}"
@@ -781,6 +793,63 @@ def write_monthly_step0001_tsv_file(list_step0001_tsv_file_paths: list[Path]) ->
     write_tsv_rows(monthly_step0001_tsv_file_path, monthly_step0001_tsv_rows)
     list_created_file_paths.insert(0, monthly_step0001_tsv_file_path)
     return list_created_file_paths
+
+
+def build_step0001_daily_counts_tsv_rows(
+    sample_step0001_tsv_file_path: Path,
+    dict_daily_blocks_by_date: dict[datetime, list[list[list[str]]]],
+) -> list[list[str]]:
+    """Build step0001 daily-count TSV rows from daily step0001 blocks."""
+    list_daily_count_tsv_rows = [["日付", "件数"]]
+    for target_date in get_monthly_step0001_target_dates(sample_step0001_tsv_file_path):
+        list_daily_blocks = dict_daily_blocks_by_date.get(target_date, [])
+        list_daily_count_tsv_rows.append([format_monthly_step0001_header_date(target_date), str(len(list_daily_blocks))])
+
+    return list_daily_count_tsv_rows
+
+
+def build_step0001_daily_counts_vertical_tsv_rows(list_daily_count_tsv_rows: list[list[str]]) -> list[list[str]]:
+    """Build transposed step0001 daily-count TSV rows."""
+    return [list(row_values) for row_values in zip(*list_daily_count_tsv_rows)]
+
+
+def write_step0001_daily_count_tsv_files(list_step0001_tsv_file_paths: list[Path]) -> list[Path]:
+    """Create step0001 daily-count TSV files from daily step0001 TSV files."""
+    list_step0001_daily_tsv_file_paths = [
+        step0001_tsv_file_path
+        for step0001_tsv_file_path in list_step0001_tsv_file_paths
+        if step0001_tsv_file_path.suffix.lower() == ".tsv" and "_step0001_" in step0001_tsv_file_path.name
+    ]
+    if len(list_step0001_daily_tsv_file_paths) == 0:
+        return []
+
+    sample_step0001_tsv_file_path = sorted(list_step0001_daily_tsv_file_paths, key=lambda file_path: file_path.name)[0]
+    dict_step0001_daily_tsv_paths_by_date = {
+        parse_step0001_daily_date(step0001_tsv_file_path): step0001_tsv_file_path
+        for step0001_tsv_file_path in list_step0001_daily_tsv_file_paths
+    }
+    dict_daily_blocks_by_date: dict[datetime, list[list[list[str]]]] = {}
+
+    for target_date in get_monthly_step0001_target_dates(sample_step0001_tsv_file_path):
+        step0001_tsv_file_path = dict_step0001_daily_tsv_paths_by_date.get(target_date)
+        if step0001_tsv_file_path is None:
+            dict_daily_blocks_by_date[target_date] = []
+            continue
+
+        step0001_tsv_rows = read_tsv_rows(step0001_tsv_file_path)
+        dict_daily_blocks_by_date[target_date] = read_step0001_daily_blocks(step0001_tsv_rows)
+
+    daily_counts_tsv_file_path = build_step0001_daily_counts_tsv_file_path(sample_step0001_tsv_file_path)
+    daily_counts_vertical_tsv_file_path = build_step0001_daily_counts_vertical_tsv_file_path(sample_step0001_tsv_file_path)
+    daily_counts_tsv_rows = build_step0001_daily_counts_tsv_rows(
+        sample_step0001_tsv_file_path,
+        dict_daily_blocks_by_date,
+    )
+    daily_counts_vertical_tsv_rows = build_step0001_daily_counts_vertical_tsv_rows(daily_counts_tsv_rows)
+
+    write_tsv_rows(daily_counts_tsv_file_path, daily_counts_tsv_rows)
+    write_tsv_rows(daily_counts_vertical_tsv_file_path, daily_counts_vertical_tsv_rows)
+    return [daily_counts_tsv_file_path, daily_counts_vertical_tsv_file_path]
 
 
 def parse_step0002_daily_date(step0002_tsv_file_path: Path) -> datetime:
@@ -2156,6 +2225,7 @@ def main() -> int:
         tsv_file_path = write_excel_values_to_tsv(excel_file_path)
         list_daily_tsv_file_paths = write_step0001_daily_tsv_files(tsv_file_path)
         list_monthly_step0001_file_paths = write_monthly_step0001_tsv_file(list_daily_tsv_file_paths)
+        list_step0001_daily_count_tsv_file_paths = write_step0001_daily_count_tsv_files(list_daily_tsv_file_paths)
         list_step0002_tsv_file_paths = write_step0002_daily_tsv_files(list_daily_tsv_file_paths)
         list_step0003_tsv_file_paths = write_step0003_daily_tsv_files(list_step0002_tsv_file_paths)
         list_monthly_step0003_file_paths = write_monthly_step0003_tsv_file(list_step0003_tsv_file_paths)
@@ -2184,6 +2254,8 @@ def main() -> int:
         print(daily_tsv_file_path)
     for monthly_step0001_file_path in list_monthly_step0001_file_paths:
         print(monthly_step0001_file_path)
+    for step0001_daily_count_tsv_file_path in list_step0001_daily_count_tsv_file_paths:
+        print(step0001_daily_count_tsv_file_path)
     for step0002_tsv_file_path in list_step0002_tsv_file_paths:
         print(step0002_tsv_file_path)
     for step0003_tsv_file_path in list_step0003_tsv_file_paths:
