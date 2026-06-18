@@ -164,9 +164,15 @@ def build_unique_output_file_path(i_year: int, i_month: int, output_directory_pa
     raise RuntimeError("使用可能な出力ファイル名がありません。")
 
 
+def select_random_text(list_texts: list[str]) -> str:
+    """Return one text selected by an independent 1-based random index."""
+    i_random_index = random.randint(1, len(list_texts))
+    return list_texts[i_random_index - 1]
+
+
 def build_note_text(destination_text: str) -> str:
     """Return a random note text, replacing the destination placeholder when needed."""
-    note_text = random.choice(NOTE_TEXTS)
+    note_text = select_random_text(NOTE_TEXTS)
     if note_text == "～内バック禁止":
         return f"{destination_text}内バック禁止"
     return note_text
@@ -191,8 +197,8 @@ def build_monthly_schedule_values(i_year: int, i_month: int) -> list[list[str]]:
         i_delivery_count = random.randint(1, MAX_DELIVERY_COUNT_PER_DAY)
         for i_delivery_index in range(1, i_delivery_count + 1):
             i_row_index = 1 + (i_delivery_index - 1) * DELIVERY_ROW_COUNT
-            destination_text = random.choice(DESTINATIONS)
-            vehicle_type_text = random.choice(VEHICLE_TYPES)
+            destination_text = select_random_text(DESTINATIONS)
+            vehicle_type_text = select_random_text(VEHICLE_TYPES)
             note_text = build_note_text(destination_text)
 
             list_values[i_row_index][i_day] = destination_text
