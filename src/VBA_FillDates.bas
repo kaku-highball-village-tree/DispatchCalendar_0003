@@ -4,7 +4,7 @@ Option Explicit
 ' B1 に開始日が入っている場合、B1:AF1 の完全に空のセルだけに同じ月の連続日付を入力します。
 ' 例: B1 = 2026/7/1 のとき、C1:AF1 に 2026/7/2 ～ 2026/7/31 を入力します。
 ' 例: B1 = 2026/9/1 のとき、C1:AE1 に 2026/9/2 ～ 2026/9/30 を入力し、AF1 は空白のままにします。
-Public Sub FillBlankDatesFromB1ToAE1()
+Public Sub FillBlankDatesFromB1ToAF1()
     FillBlankDatesInRow ActiveSheet.Range("B1"), ActiveSheet.Range("AF1")
 End Sub
 
