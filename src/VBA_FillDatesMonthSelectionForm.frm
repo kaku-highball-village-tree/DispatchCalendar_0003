@@ -1,12 +1,12 @@
 VERSION 5.00
-Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm 
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm
    Caption         =   "Ώ۔NI"
    ClientHeight    =   2160
    ClientLeft      =   120
    ClientTop       =   465
    ClientWidth     =   4320
    StartUpPosition =   1  'I[i[ tH[̒
-   Begin MSForms.CommandButton cmdCancel 
+   Begin MSForms.CommandButton cmdCancel
       Caption         =   "LZ"
       Height          =   360
       Left            =   2280
@@ -14,7 +14,7 @@ Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm
       Top             =   1560
       Width           =   1200
    End
-   Begin MSForms.CommandButton cmdOK 
+   Begin MSForms.CommandButton cmdOK
       Caption         =   "OK"
       Height          =   360
       Left            =   840
@@ -22,7 +22,7 @@ Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm
       Top             =   1560
       Width           =   1200
    End
-   Begin MSForms.CommandButton cmdNextMonth 
+   Begin MSForms.CommandButton cmdNextMonth
       Caption         =   ""
       Height          =   360
       Left            =   3000
@@ -30,7 +30,7 @@ Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm
       Top             =   900
       Width           =   720
    End
-   Begin MSForms.Label lblSelectedMonth 
+   Begin MSForms.Label lblSelectedMonth
       Alignment       =   2  '
       Caption         =   "0000N00"
       Height          =   300
@@ -39,7 +39,7 @@ Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm
       Top             =   960
       Width           =   1440
    End
-   Begin MSForms.CommandButton cmdPreviousMonth 
+   Begin MSForms.CommandButton cmdPreviousMonth
       Caption         =   ""
       Height          =   360
       Left            =   600
@@ -47,7 +47,7 @@ Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm
       Top             =   900
       Width           =   720
    End
-   Begin MSForms.Label lblMessage 
+   Begin MSForms.Label lblMessage
       Alignment       =   2  '
       Caption         =   "Ώ۔NIĂ"
       Height          =   300
