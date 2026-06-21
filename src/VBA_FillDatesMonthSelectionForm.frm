@@ -1,20 +1,20 @@
 VERSION 5.00
-Begin VB.UserForm VBA_FillDatesMonthSelectionForm 
-   Caption         =   "対象年月選択"
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} VBA_FillDatesMonthSelectionForm 
+   Caption         =   "Ώ۔NI"
    ClientHeight    =   2160
    ClientLeft      =   120
    ClientTop       =   465
    ClientWidth     =   4320
-   StartUpPosition =   1  'オーナー フォームの中央
-   Begin VB.CommandButton cmdCancel 
-      Caption         =   "キャンセル"
+   StartUpPosition =   1  'I[i[ tH[̒
+   Begin MSForms.CommandButton cmdCancel 
+      Caption         =   "LZ"
       Height          =   360
       Left            =   2280
       TabIndex        =   5
       Top             =   1560
       Width           =   1200
    End
-   Begin VB.CommandButton cmdOK 
+   Begin MSForms.CommandButton cmdOK 
       Caption         =   "OK"
       Height          =   360
       Left            =   840
@@ -22,34 +22,34 @@ Begin VB.UserForm VBA_FillDatesMonthSelectionForm
       Top             =   1560
       Width           =   1200
    End
-   Begin VB.CommandButton cmdNextMonth 
-      Caption         =   "→"
+   Begin MSForms.CommandButton cmdNextMonth 
+      Caption         =   ""
       Height          =   360
       Left            =   3000
       TabIndex        =   3
       Top             =   900
       Width           =   720
    End
-   Begin VB.Label lblSelectedMonth 
-      Alignment       =   2  '中央揃え
-      Caption         =   "0000年00月"
+   Begin MSForms.Label lblSelectedMonth 
+      Alignment       =   2  '
+      Caption         =   "0000N00"
       Height          =   300
       Left            =   1320
       TabIndex        =   2
       Top             =   960
       Width           =   1440
    End
-   Begin VB.CommandButton cmdPreviousMonth 
-      Caption         =   "←"
+   Begin MSForms.CommandButton cmdPreviousMonth 
+      Caption         =   ""
       Height          =   360
       Left            =   600
       TabIndex        =   1
       Top             =   900
       Width           =   720
    End
-   Begin VB.Label lblMessage 
-      Alignment       =   2  '中央揃え
-      Caption         =   "対象年月を選択してください"
+   Begin MSForms.Label lblMessage 
+      Alignment       =   2  '
+      Caption         =   "Ώ۔NIĂ"
       Height          =   300
       Left            =   480
       TabIndex        =   0
@@ -122,5 +122,5 @@ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
 End Sub
 
 Private Sub UpdateMonthText()
-    lblSelectedMonth.Caption = CStr(m_iSelectedYear) & "年" & Format$(m_iSelectedMonth, "00") & "月"
+    lblSelectedMonth.Caption = CStr(m_iSelectedYear) & "N" & Format$(m_iSelectedMonth, "00") & ""
 End Sub
