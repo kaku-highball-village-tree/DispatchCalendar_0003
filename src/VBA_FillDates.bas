@@ -1,6 +1,24 @@
 Attribute VB_Name = "VBA_FillDates"
 Option Explicit
 
+' UserForm で対象年月を選択し、B1 に選択年月の1日を入力して B1:AF1 の日付を埋めます。
+Public Sub SelectMonthAndFillDatesFromB1ToAF1()
+    Dim objMonthSelectionForm As VBA_FillDatesMonthSelectionForm
+    Dim dtSelectedDate As Date
+
+    Set objMonthSelectionForm = New VBA_FillDatesMonthSelectionForm
+    objMonthSelectionForm.Show vbModal
+
+    If objMonthSelectionForm.IsAccepted Then
+        dtSelectedDate = DateSerial(objMonthSelectionForm.SelectedYear, objMonthSelectionForm.SelectedMonth, 1)
+        ActiveSheet.Range("B1").Value = dtSelectedDate
+        ActiveSheet.Range("B1").NumberFormatLocal = "yyyy/m/d"
+        FillBlankDatesFromB1ToAF1
+    End If
+
+    Unload objMonthSelectionForm
+End Sub
+
 ' B1 に開始日が入っている場合、B1:AF1 の完全に空のセルだけに同じ月の連続日付を入力します。
 ' 例: B1 = 2026/7/1 のとき、C1:AF1 に 2026/7/2 ～ 2026/7/31 を入力します。
 ' 例: B1 = 2026/9/1 のとき、C1:AE1 に 2026/9/2 ～ 2026/9/30 を入力し、AF1 は空白のままにします。
