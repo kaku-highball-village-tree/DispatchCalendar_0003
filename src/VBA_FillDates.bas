@@ -8,6 +8,7 @@ Public Sub SelectMonthAndFillDatesFromB1ToAF1()
     Dim objTargetWorkbook As Workbook
     Dim objTargetWorksheet As Worksheet
     Dim strWorksheetName As String
+    Dim strOutputFilePath As String
 
     Set objMonthSelectionForm = New VBA_FillDatesMonthSelectionForm
     objMonthSelectionForm.Show vbModal
@@ -19,10 +20,19 @@ Public Sub SelectMonthAndFillDatesFromB1ToAF1()
 
         If WorksheetExists(strWorksheetName, objTargetWorkbook) Then
             MsgBox "シート「" & strWorksheetName & "」は既に存在します。", vbExclamation, "対象年月シート作成"
+        ElseIf Len(objTargetWorkbook.Path) = 0 Then
+            MsgBox "元の .xlsm ファイルを保存してから実行してください。", vbExclamation, "月別ファイル保存"
         Else
-            Set objTargetWorksheet = objTargetWorkbook.Worksheets.Add(After:=objTargetWorkbook.Worksheets(objTargetWorkbook.Worksheets.Count))
-            objTargetWorksheet.Name = strWorksheetName
-            FillMonthDatesAndSequence objTargetWorksheet, dtSelectedDate
+            strOutputFilePath = BuildMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
+
+            If Len(Dir$(strOutputFilePath)) > 0 Then
+                MsgBox "ファイル「" & strOutputFilePath & "」は既に存在します。", vbExclamation, "月別ファイル保存"
+            Else
+                Set objTargetWorksheet = objTargetWorkbook.Worksheets.Add(After:=objTargetWorkbook.Worksheets(objTargetWorkbook.Worksheets.Count))
+                objTargetWorksheet.Name = strWorksheetName
+                FillMonthDatesAndSequence objTargetWorksheet, dtSelectedDate
+                SaveWorksheetAsXlsx objTargetWorksheet, strOutputFilePath
+            End If
         End If
     End If
 
@@ -103,3 +113,17 @@ Private Function WorksheetExists(ByVal worksheetName As String, ByVal targetWork
 
     WorksheetExists = False
 End Function
+
+
+Private Function BuildMonthlyWorkbookPath(ByVal targetWorkbook As Workbook, ByVal worksheetName As String) As String
+    BuildMonthlyWorkbookPath = targetWorkbook.Path & Application.PathSeparator & "配車カレンダー_" & worksheetName & ".xlsx"
+End Function
+
+Private Sub SaveWorksheetAsXlsx(ByVal sourceWorksheet As Worksheet, ByVal outputFilePath As String)
+    Dim objOutputWorkbook As Workbook
+
+    sourceWorksheet.Copy
+    Set objOutputWorkbook = ActiveWorkbook
+    objOutputWorkbook.SaveAs Filename:=outputFilePath, FileFormat:=xlOpenXMLWorkbook
+    objOutputWorkbook.Close SaveChanges:=False
+End Sub
