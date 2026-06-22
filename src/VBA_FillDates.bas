@@ -86,7 +86,7 @@ Private Sub FillMonthDatesAndSequence(ByVal targetWorksheet As Worksheet, ByVal 
 
     For lDayIndex = 1 To lDayCount
         targetWorksheet.Cells(1, lDayIndex + 1).Value = DateSerial(Year(firstDateOfMonth), Month(firstDateOfMonth), lDayIndex)
-        targetWorksheet.Cells(1, lDayIndex + 1).NumberFormatLocal = "yyyy/m/d"
+        targetWorksheet.Cells(1, lDayIndex + 1).NumberFormatLocal = "yyyy""年""mm""月""dd""日""(aaa)"
         targetWorksheet.Cells(2 + ((lDayIndex - 1) * 3), 1).Value = lDayIndex
     Next lDayIndex
 End Sub
