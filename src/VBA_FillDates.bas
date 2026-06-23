@@ -26,6 +26,10 @@ Public Sub SelectMonthAndFillDatesFromB1ToAF1()
             strOutputFilePath = BuildMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
 
             If Len(Dir$(strOutputFilePath)) > 0 Then
+                strOutputFilePath = BuildTimestampedMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
+            End If
+
+            If Len(Dir$(strOutputFilePath)) > 0 Then
                 MsgBox "ファイル「" & strOutputFilePath & "」は既に存在します。", vbExclamation, "月別ファイル保存"
             Else
                 Set objTargetWorksheet = objTargetWorkbook.Worksheets.Add(After:=objTargetWorkbook.Worksheets(objTargetWorkbook.Worksheets.Count))
@@ -117,6 +121,11 @@ End Function
 
 Private Function BuildMonthlyWorkbookPath(ByVal targetWorkbook As Workbook, ByVal worksheetName As String) As String
     BuildMonthlyWorkbookPath = targetWorkbook.Path & Application.PathSeparator & "配車カレンダー_" & worksheetName & ".xlsx"
+End Function
+
+
+Private Function BuildTimestampedMonthlyWorkbookPath(ByVal targetWorkbook As Workbook, ByVal worksheetName As String) As String
+    BuildTimestampedMonthlyWorkbookPath = targetWorkbook.Path & Application.PathSeparator & "配車カレンダー_" & worksheetName & "_" & Format$(Now, "yyyy_mm_dd_hh_nn_ss") & ".xlsx"
 End Function
 
 Private Sub SaveWorksheetAsXlsx(ByVal sourceWorksheet As Worksheet, ByVal outputFilePath As String)
