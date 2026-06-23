@@ -37,6 +37,7 @@ Public Sub SelectMonthAndFillDatesFromB1ToAF1()
                     objTargetWorksheet.Name = strWorksheetName
                     FillMonthDatesAndSequence objTargetWorksheet, dtSelectedDate
                     SaveWorksheetAsXlsx objTargetWorksheet, strOutputFilePath
+                    MsgBox GetFileNameFromPath(strOutputFilePath) & " を作成しました。", vbInformation, "月別ファイル保存"
                 End If
             End If
         End If
@@ -166,6 +167,24 @@ End Function
 
 Private Function BuildTimestampedMonthlyWorkbookPath(ByVal targetWorkbook As Workbook, ByVal worksheetName As String) As String
     BuildTimestampedMonthlyWorkbookPath = targetWorkbook.Path & Application.PathSeparator & "配車カレンダー_" & worksheetName & "_" & Format$(Now, "yyyy_mm_dd_hh_nn_ss") & ".xlsx"
+End Function
+
+
+Private Function GetFileNameFromPath(ByVal filePath As String) As String
+    Dim lBackslashPosition As Long
+    Dim lSlashPosition As Long
+    Dim lFileNameStartPosition As Long
+
+    lBackslashPosition = InStrRev(filePath, "\")
+    lSlashPosition = InStrRev(filePath, "/")
+
+    If lBackslashPosition > lSlashPosition Then
+        lFileNameStartPosition = lBackslashPosition + 1
+    Else
+        lFileNameStartPosition = lSlashPosition + 1
+    End If
+
+    GetFileNameFromPath = Mid$(filePath, lFileNameStartPosition)
 End Function
 
 Private Sub SaveWorksheetAsXlsx(ByVal sourceWorksheet As Worksheet, ByVal outputFilePath As String)
