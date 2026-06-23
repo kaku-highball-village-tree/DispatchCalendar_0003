@@ -18,24 +18,26 @@ Public Sub SelectMonthAndFillDatesFromB1ToAF1()
         strWorksheetName = Format$(dtSelectedDate, "yyyy年mm月")
         Set objTargetWorkbook = ActiveWorkbook
 
-        If WorksheetExists(strWorksheetName, objTargetWorkbook) Then
-            MsgBox "シート「" & strWorksheetName & "」は既に存在します。", vbExclamation, "対象年月シート作成"
-        ElseIf Len(objTargetWorkbook.Path) = 0 Then
+        If Len(objTargetWorkbook.Path) = 0 Then
             MsgBox "元の .xlsm ファイルを保存してから実行してください。", vbExclamation, "月別ファイル保存"
-        Else
-            strOutputFilePath = BuildMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
-
-            If Len(Dir$(strOutputFilePath)) > 0 Then
-                strOutputFilePath = BuildTimestampedMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
-            End If
-
-            If Len(Dir$(strOutputFilePath)) > 0 Then
-                MsgBox "ファイル「" & strOutputFilePath & "」は既に存在します。", vbExclamation, "月別ファイル保存"
+        ElseIf DeleteWorksheetsExceptSheet1(objTargetWorkbook) Then
+            If WorksheetExists(strWorksheetName, objTargetWorkbook) Then
+                MsgBox "シート「" & strWorksheetName & "」は既に存在します。", vbExclamation, "対象年月シート作成"
             Else
-                Set objTargetWorksheet = objTargetWorkbook.Worksheets.Add(After:=objTargetWorkbook.Worksheets(objTargetWorkbook.Worksheets.Count))
-                objTargetWorksheet.Name = strWorksheetName
-                FillMonthDatesAndSequence objTargetWorksheet, dtSelectedDate
-                SaveWorksheetAsXlsx objTargetWorksheet, strOutputFilePath
+                strOutputFilePath = BuildMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
+
+                If Len(Dir$(strOutputFilePath)) > 0 Then
+                    strOutputFilePath = BuildTimestampedMonthlyWorkbookPath(objTargetWorkbook, strWorksheetName)
+                End If
+
+                If Len(Dir$(strOutputFilePath)) > 0 Then
+                    MsgBox "ファイル「" & strOutputFilePath & "」は既に存在します。", vbExclamation, "月別ファイル保存"
+                Else
+                    Set objTargetWorksheet = objTargetWorkbook.Worksheets.Add(After:=objTargetWorkbook.Worksheets(objTargetWorkbook.Worksheets.Count))
+                    objTargetWorksheet.Name = strWorksheetName
+                    FillMonthDatesAndSequence objTargetWorksheet, dtSelectedDate
+                    SaveWorksheetAsXlsx objTargetWorksheet, strOutputFilePath
+                End If
             End If
         End If
     End If
@@ -104,6 +106,44 @@ Private Sub FillMonthDatesAndSequence(ByVal targetWorksheet As Worksheet, ByVal 
         targetWorksheet.Cells(2 + ((lDayIndex - 1) * 3), 1).Value = lDayIndex
     Next lDayIndex
 End Sub
+
+
+Private Function DeleteWorksheetsExceptSheet1(ByVal targetWorkbook As Workbook) As Boolean
+    Dim objWorksheet As Worksheet
+    Dim lWorksheetIndex As Long
+    Dim bFoundSheet1 As Boolean
+
+    For Each objWorksheet In targetWorkbook.Worksheets
+        If objWorksheet.Name = "Sheet1" Then
+            bFoundSheet1 = True
+            Exit For
+        End If
+    Next objWorksheet
+
+    If Not bFoundSheet1 Then
+        MsgBox "Sheet1 が見つからないため、月別シートを作成できません。", vbExclamation, "対象年月シート作成"
+        DeleteWorksheetsExceptSheet1 = False
+        Exit Function
+    End If
+
+    On Error GoTo DeleteFailed
+    Application.DisplayAlerts = False
+
+    For lWorksheetIndex = targetWorkbook.Worksheets.Count To 1 Step -1
+        If targetWorkbook.Worksheets(lWorksheetIndex).Name <> "Sheet1" Then
+            targetWorkbook.Worksheets(lWorksheetIndex).Delete
+        End If
+    Next lWorksheetIndex
+
+    Application.DisplayAlerts = True
+    DeleteWorksheetsExceptSheet1 = True
+    Exit Function
+
+DeleteFailed:
+    Application.DisplayAlerts = True
+    MsgBox "Sheet1 以外のシート削除中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation, "対象年月シート作成"
+    DeleteWorksheetsExceptSheet1 = False
+End Function
 
 Private Function WorksheetExists(ByVal worksheetName As String, ByVal targetWorkbook As Workbook) As Boolean
     Dim objWorksheet As Worksheet
