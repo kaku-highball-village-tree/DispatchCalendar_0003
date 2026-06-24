@@ -2,6 +2,7 @@ Attribute VB_Name = "VBA_FillDates"
 Option Explicit
 
 Private Const SHEET1_WORKSHEET_NAME As String = "Sheet1"
+Private Const SHEET2_WORKSHEET_NAME As String = "Sheet2"
 Private Const NEW_CREATION_WORKSHEET_NAME As String = "新規作成"
 
 ' UserForm で対象年月を選択し、新規シートに選択月の日付と連番を入力します。
@@ -116,18 +117,21 @@ Private Function DeleteWorksheetsExceptBaseSheets(ByVal targetWorkbook As Workbo
     Dim objWorksheet As Worksheet
     Dim lWorksheetIndex As Long
     Dim bFoundSheet1 As Boolean
+    Dim bFoundSheet2 As Boolean
     Dim bFoundNewCreationSheet As Boolean
 
     For Each objWorksheet In targetWorkbook.Worksheets
         If objWorksheet.Name = SHEET1_WORKSHEET_NAME Then
             bFoundSheet1 = True
+        ElseIf objWorksheet.Name = SHEET2_WORKSHEET_NAME Then
+            bFoundSheet2 = True
         ElseIf objWorksheet.Name = NEW_CREATION_WORKSHEET_NAME Then
             bFoundNewCreationSheet = True
         End If
     Next objWorksheet
 
-    If Not bFoundSheet1 Or Not bFoundNewCreationSheet Then
-        MsgBox "Sheet1 または 新規作成 シートが見つからないため、月別シートを作成できません。", vbExclamation, "対象年月シート作成"
+    If Not bFoundSheet1 Or Not bFoundSheet2 Or Not bFoundNewCreationSheet Then
+        MsgBox "Sheet1、Sheet2、または 新規作成 シートが見つからないため、月別シートを作成できません。", vbExclamation, "対象年月シート作成"
         DeleteWorksheetsExceptBaseSheets = False
         Exit Function
     End If
@@ -137,6 +141,7 @@ Private Function DeleteWorksheetsExceptBaseSheets(ByVal targetWorkbook As Workbo
 
     For lWorksheetIndex = targetWorkbook.Worksheets.Count To 1 Step -1
         If targetWorkbook.Worksheets(lWorksheetIndex).Name <> SHEET1_WORKSHEET_NAME _
+            And targetWorkbook.Worksheets(lWorksheetIndex).Name <> SHEET2_WORKSHEET_NAME _
             And targetWorkbook.Worksheets(lWorksheetIndex).Name <> NEW_CREATION_WORKSHEET_NAME Then
             targetWorkbook.Worksheets(lWorksheetIndex).Delete
         End If
@@ -148,7 +153,7 @@ Private Function DeleteWorksheetsExceptBaseSheets(ByVal targetWorkbook As Workbo
 
 DeleteFailed:
     Application.DisplayAlerts = True
-    MsgBox "Sheet1 と 新規作成 以外のシート削除中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation, "対象年月シート作成"
+    MsgBox "Sheet1、Sheet2、新規作成 以外のシート削除中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation, "対象年月シート作成"
     DeleteWorksheetsExceptBaseSheets = False
 End Function
 
