@@ -1,5 +1,9 @@
 # DispatchCalendar_0003
 
+## 開発ワークフロー
+
+AI支援コーディングで新機能を追加する場合は、要件定義、仕様メモ、検証手順を `docs/AI_DRIVEN_DEVELOPMENT_WORKFLOW.md` に沿って整理してから実装します。
+
 ## VBA: B1 から AE1 まで連続日付を入力する
 
 `src/FillDates.bas` には、Excel の B1 に入力された開始日を基準に、B1:AE1 の空白セルへ連続日付を入力する VBA マクロを用意しています。
